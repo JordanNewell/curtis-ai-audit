@@ -1,0 +1,20 @@
+{
+  "name": "curtis-ai-audit",
+  "version": "0.1.0",
+  "description": "Local-first audit trail for AI agent activity in your vault. Every inference gets an append-only markdown receipt. Speaks OM-1 (Obsidian Messenger).",
+  "main": "main.js",
+  "private": true,
+  "scripts": {
+    "dev": "node esbuild.config.mjs",
+    "build": "tsc -noEmit -skipLibCheck && node esbuild.config.mjs production",
+    "test": "vitest run"
+  },
+  "devDependencies": {
+    "@types/node": "^22.10.2",
+    "builtin-modules": "3.3.0",
+    "esbuild": "^0.25.0",
+    "obsidian": "latest",
+    "typescript": "5.7.2",
+    "vitest": "^2.1.8"
+  }
+}
