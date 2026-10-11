@@ -270,9 +270,11 @@ export default class CurtisAuditPlugin extends Plugin {
    * Code settings are merged in place; only this plugin's entries are ever
    * removed by uninstall.
    */
-  private hookPaths(): { writerPath: string; inboxPath: string } {
-    const adapter = this.app.vault.adapter as FileSystemAdapter;
-    const base = adapter.getBasePath().replace(/\\/g, "/");
+  private hookPaths(): { writerPath: string; inboxPath: string } | null {
+    // getBasePath() only exists on the desktop FileSystemAdapter; on mobile
+    // there is no local writer for agents to call anyway.
+    if (!(this.app.vault.adapter instanceof FileSystemAdapter)) return null;
+    const base = this.app.vault.adapter.getBasePath().replace(/\\/g, "/");
     const root = this.settings.messengerRoot || "Messenger";
     return {
       writerPath: `${base}/${this.manifest.dir}/bin/curtis-audit-file.mjs`,
@@ -307,6 +309,10 @@ export default class CurtisAuditPlugin extends Plugin {
 
   private async installHooks(): Promise<void> {
     const paths = this.hookPaths();
+    if (!paths) {
+      new Notice("Agent audit hooks are desktop-only (they run a local writer script)", 8000);
+      return;
+    }
     const writerNote = normalizePath(`${this.manifest.dir}/bin/curtis-audit-file.mjs`);
     if (!(await this.app.vault.adapter.exists(writerNote))) {
       new Notice("Audit hooks: writer script missing — reinstall the plugin folder", 10000);

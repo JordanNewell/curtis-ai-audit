@@ -1498,8 +1498,8 @@ var CurtisAuditPlugin = class extends import_obsidian5.Plugin {
    * removed by uninstall.
    */
   hookPaths() {
-    const adapter = this.app.vault.adapter;
-    const base = adapter.getBasePath().replace(/\\/g, "/");
+    if (!(this.app.vault.adapter instanceof import_obsidian5.FileSystemAdapter)) return null;
+    const base = this.app.vault.adapter.getBasePath().replace(/\\/g, "/");
     const root = this.settings.messengerRoot || "Messenger";
     return {
       writerPath: `${base}/${this.manifest.dir}/bin/curtis-audit-file.mjs`,
@@ -1531,6 +1531,10 @@ var CurtisAuditPlugin = class extends import_obsidian5.Plugin {
   }
   async installHooks() {
     const paths = this.hookPaths();
+    if (!paths) {
+      new import_obsidian5.Notice("Agent audit hooks are desktop-only (they run a local writer script)", 8e3);
+      return;
+    }
     const writerNote = (0, import_obsidian5.normalizePath)(`${this.manifest.dir}/bin/curtis-audit-file.mjs`);
     if (!await this.app.vault.adapter.exists(writerNote)) {
       new import_obsidian5.Notice("Audit hooks: writer script missing \u2014 reinstall the plugin folder", 1e4);
