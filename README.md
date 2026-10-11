@@ -9,8 +9,9 @@ Every agent inference gets an append-only markdown receipt — a journal you
 keep on your own agents, not a forensic system, and honest about the
 difference (see [SPEC.md](./SPEC.md)).
 
-Speaks [OM-1](../Obsiadian%20Messenger/SPEC.md) (Obsidian Messenger): agents,
-other plugins, or a shell one-liner can all file receipts. The messenger
+Speaks OM-1 (Obsidian Messenger): agents,
+other plugins, or a shell one-liner can all file receipts — see
+[INTEGRATION.md](./INTEGRATION.md). The messenger
 plugin is *not* required — the audit inbox is just a file.
 
 ## What it does
@@ -25,7 +26,9 @@ plugin is *not* required — the audit inbox is just a file.
 - **Agent hooks** — `Install agent audit hooks` writes vault-scoped configs
   (Claude Code, OpenCode) so local agents file their own receipts through the
   bundled writer (`bin/curtis-audit-file.mjs`); Codex and Gemini get manual
-  recipes. Metadata only — tool input content is never recorded.
+  recipes. Metadata only — tool input content is never recorded. Source
+  installs only: the writer ships with the repo, not with plugin releases
+  (Paths A and B work everywhere).
 - **Direct API** — in-process plugins can skip the bus:
   `window.curtisAudit.record({ agent, model, tokens, ... })`.
 - **Query** — the read side: `window.curtisAudit.query({ agent, status,
@@ -39,9 +42,15 @@ plugin is *not* required — the audit inbox is just a file.
   policy contradiction. Opt in if you want it; each prune is itself recorded
   as a receipt, so the gaps it leaves are self-explaining.
 
-## Install (dev)
+## Install
 
-Copy this folder into `<vault>/.obsidian/plugins/curtis-ai-audit/`, then
+From a [release](../../releases): download `main.js`, `manifest.json`, and
+`styles.css` into `<vault>/.obsidian/plugins/curtis-ai-audit/`, then enable
+the plugin in Obsidian (Settings → Community plugins). Once accepted into the
+community directory it installs from there directly.
+
+From source: clone this repo into
+`<vault>/.obsidian/plugins/curtis-ai-audit/`, run
 `npm install && npm run build`, and enable it in Obsidian.
 
 ## Usage
@@ -100,7 +109,7 @@ See [INTEGRATION.md](./INTEGRATION.md) for wiring up `curtis-ai-chat`.
 ## Testing
 
 ```
-npm test        # 86 unit tests, in-memory vault, no Obsidian needed
+npm test        # 107 unit tests, in-memory vault, no Obsidian needed
 npm run build   # typecheck + bundle to main.js
 ```
 

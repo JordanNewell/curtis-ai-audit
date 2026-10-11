@@ -11,7 +11,7 @@ edits and deletions leave detectable traces (see §6). If you need a log a
 third party can be asked to believe, that is a different-sized project; §8
 describes the upgrade path.
 
-Works standalone or alongside the [Obsidian Messenger](../Obsiadian%20Messenger)
+Works standalone or alongside the Obsidian Messenger
 plugin (OM-1 protocol). The block format is byte-compatible with OM-1's
 envelope rules, so the same parsing discipline applies.
 
