@@ -115,8 +115,9 @@ npm run build   # typecheck + bundle to main.js
 
 ## Status
 
-v0.2.1 — the local-first tier, deliberately. Tamper-evidence, retention
+v0.2.2 — the local-first tier, deliberately. Tamper-evidence, retention
 enforcement, and reporting are the next tier up and are not pretended here.
+Requires Obsidian 1.13.0+ (declarative settings).
 
 ## License
 

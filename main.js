@@ -953,13 +953,11 @@ var NMOJI_DATA_URI = "data:image/png;base64,iVBORw0KGgoAAAANSUhEUgAAAIAAAACACAYA
 
 // src/settings-tab.ts
 function brandNameFragment() {
-  const frag = document.createDocumentFragment();
-  const mark = document.createElement("span");
-  mark.className = "curtis-audit-mark";
-  (0, import_obsidian4.setIcon)(mark, CURTIS_MARK_ICON_ID);
-  frag.appendChild(mark);
-  frag.appendChild(document.createTextNode("Curtis AI Audit"));
-  return frag;
+  return createFragment((frag) => {
+    const mark = frag.createSpan({ cls: "curtis-audit-mark" });
+    (0, import_obsidian4.setIcon)(mark, CURTIS_MARK_ICON_ID);
+    frag.appendText("Curtis AI Audit");
+  });
 }
 function renderAbout(setting, version) {
   setting.settingEl.addClass("curtis-audit-about");
@@ -989,12 +987,6 @@ var AuditSettingTab = class extends import_obsidian4.PluginSettingTab {
     super(app, plugin);
     this.plugin = plugin;
   }
-  /**
-   * Declarative settings (Obsidian 1.13+): the tab renders from these
-   * definitions and they feed the settings search index. Values flow through
-   * getControlValue/setControlValue below; display() is the pre-1.13
-   * fallback (minAppVersion is 1.4.0).
-   */
   getSettingDefinitions() {
     return [
       {
@@ -1051,58 +1043,6 @@ var AuditSettingTab = class extends import_obsidian4.PluginSettingTab {
     if (!(key in settings)) return;
     settings[key] = value;
     return this.plugin.saveAndReload();
-  }
-  display() {
-    const { containerEl } = this;
-    containerEl.empty();
-    new import_obsidian4.Setting(containerEl).setName(brandNameFragment()).setHeading();
-    new import_obsidian4.Setting(containerEl).setName("Ledger folder").setDesc("Receipts are appended under <folder>/ledger/, one markdown shard per day.").addText(
-      (text) => text.setPlaceholder("Audit").setValue(this.plugin.settings.root).onChange(async (value) => {
-        this.plugin.settings.root = value;
-        await this.plugin.saveAndReload();
-      })
-    );
-    new import_obsidian4.Setting(containerEl).setName("Messenger root").setDesc(
-      "Folder of the OM-1 bus (default Messenger). The audit inbox is watched at <root>/<inbox address>/inbox.md. Clear to disable bus ingest; direct recording via window.curtisAudit keeps working."
-    ).addText(
-      (text) => text.setPlaceholder("Messenger").setValue(this.plugin.settings.messengerRoot).onChange(async (value) => {
-        this.plugin.settings.messengerRoot = value;
-        await this.plugin.saveAndReload();
-      })
-    );
-    new import_obsidian4.Setting(containerEl).setName("Audit inbox address").setDesc("Senders append OM-1 messages here to file receipts.").addText(
-      (text) => text.setPlaceholder("audit").setValue(this.plugin.settings.inboxAddress).onChange(async (value) => {
-        this.plugin.settings.inboxAddress = value;
-        await this.plugin.saveAndReload();
-      })
-    );
-    new import_obsidian4.Setting(containerEl).setName("Poll interval (seconds)").setDesc("How often the audit inbox is checked.").addText(
-      (text) => text.setValue(String(this.plugin.settings.pollSeconds)).onChange(async (value) => {
-        const seconds = parseInt(value, 10);
-        if (!Number.isNaN(seconds)) {
-          this.plugin.settings.pollSeconds = seconds;
-          await this.plugin.saveAndReload();
-        }
-      })
-    );
-    new import_obsidian4.Setting(containerEl).setName("Retention (days, 0 = keep forever)").setDesc(
-      "Off by default: an audit trail that silently ages out is not an audit trail. Pruning whole shards leaves sequence gaps that verify reports as warnings."
-    ).addText(
-      (text) => text.setValue(String(this.plugin.settings.retentionDays)).onChange(async (value) => {
-        const days = parseInt(value, 10);
-        if (!Number.isNaN(days)) {
-          this.plugin.settings.retentionDays = days;
-          await this.plugin.saveAndReload();
-        }
-      })
-    );
-    new import_obsidian4.Setting(containerEl).setName("Debug notices").setDesc("Show a notice on every ingest pass that handled messages.").addToggle(
-      (toggle) => toggle.setValue(this.plugin.settings.debug).onChange(async (value) => {
-        this.plugin.settings.debug = value;
-        await this.plugin.saveSettings();
-      })
-    );
-    renderAbout(new import_obsidian4.Setting(containerEl), this.plugin.manifest.version);
   }
 };
 
