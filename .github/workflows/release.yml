@@ -9,6 +9,10 @@ name: Release
 on:
   push:
     tags:
+      # Plain "X.Y.Z" tags are the convention here — the Obsidian plugin
+      # checker matches the manifest version against the release tag.
+      # "vX.Y.Z" is also accepted.
+      - "*"
       - "v*"
 
 permissions:
