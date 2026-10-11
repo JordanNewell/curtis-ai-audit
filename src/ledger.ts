@@ -9,7 +9,7 @@
  * evidence, which is exactly as far as a local-first journal goes.
  */
 
-import { TFile, TFolder, Vault, normalizePath } from "obsidian";
+import { FileManager, TFile, TFolder, Vault, normalizePath } from "obsidian";
 import {
   ensureFolder,
   mutateFileAtomic,
@@ -49,7 +49,7 @@ export class AuditLedger {
   private stateLoaded = false;
   private stateDirty = false;
 
-  constructor(private vault: Vault, private root: string) {}
+  constructor(private vault: Vault, private fileManager: FileManager, private root: string) {}
 
   get ledgerDir(): string {
     return normalizePath(`${this.root}/ledger`);
@@ -85,7 +85,7 @@ export class AuditLedger {
     const path = this.shardPath(day);
     const block = encodeBlock(
       LEDGER_MARKER,
-      receipt as unknown as Record<string, unknown>,
+      receipt,
       renderReceipt(receipt)
     );
     const file = this.vault.getAbstractFileByPath(path);
@@ -163,7 +163,8 @@ export class AuditLedger {
    * Drop receipts recorded before the cutoff. Unlike mail GC, retention
    * defaults to off (0 = keep everything) — an audit trail that silently
    * ages out is a policy contradiction. Pruning whole shards leaves seq
-   * gaps; that trade-off is documented in SPEC.md.
+   * gaps; that trade-off is documented in SPEC.md. Emptied shards go to the
+   * trash (respecting the user's deletion preference), not a hard delete.
    */
   async prune(maxAgeDays: number): Promise<number> {
     if (maxAgeDays <= 0) return 0;
@@ -177,7 +178,7 @@ export class AuditLedger {
       const kept = read.receipts.filter((r) => Date.parse(r.recorded) >= cutoff);
       dropped += read.receipts.length - kept.length;
       if (kept.length === 0) {
-        await this.vault.delete(file, true);
+        await this.fileManager.trashFile(file);
       } else if (kept.length !== read.receipts.length) {
         const day = file.name.replace(/\.md$/, "");
         const content = shardHeader(day) + kept.map(renderBlock).join("");
@@ -230,7 +231,7 @@ export class AuditLedger {
 function renderBlock(receipt: AuditReceiptV1): string {
   return encodeBlock(
     LEDGER_MARKER,
-    receipt as unknown as Record<string, unknown>,
+    receipt,
     renderReceipt(receipt)
   );
 }

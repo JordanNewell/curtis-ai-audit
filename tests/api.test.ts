@@ -6,10 +6,10 @@ import { CurtisAuditApiV1, createApi } from "../src/api";
 import { recordPruneReceipt } from "../src/selfaudit";
 import { sanitizeSettings, DEFAULT_SETTINGS } from "../src/settings";
 import { encodeBlock } from "../src/protocol";
-import { FakeVault } from "./fake-vault";
+import { FakeVault, fakeFileManager } from "./fake-vault";
 
 function makeApi(vault: FakeVault, cursors: Record<string, never> = {}) {
-  const ledger = new AuditLedger(vault as unknown as Vault, "Audit");
+  const ledger = new AuditLedger(vault as unknown as Vault, fakeFileManager(vault), "Audit");
   const ingestor = new AuditIngestor(vault as unknown as Vault, ledger, {
     messengerRoot: "Messenger",
     address: "audit",

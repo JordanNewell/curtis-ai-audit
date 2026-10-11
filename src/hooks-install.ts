@@ -203,7 +203,7 @@ export function geminiInstructions(writerPath: string, inboxPath: string): strin
   );
 }
 
-async function readJson(io: HookIo, path: string): Promise<unknown | "missing" | "malformed"> {
+async function readJson(io: HookIo, path: string): Promise<unknown> {
   const content = await io.readText(path);
   if (content === null) return "missing";
   try {

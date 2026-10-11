@@ -3,7 +3,7 @@ import { Vault } from "obsidian";
 import { AuditLedger } from "../src/ledger";
 import { AuditIngestor, Cursor } from "../src/ingest";
 import { encodeBlock } from "../src/protocol";
-import { FakeVault } from "./fake-vault";
+import { FakeVault, fakeFileManager } from "./fake-vault";
 
 function busMessage(from: string, body: string, ts: string, id?: string): string {
   return encodeBlock(
@@ -14,7 +14,7 @@ function busMessage(from: string, body: string, ts: string, id?: string): string
 }
 
 function makeIngestor(vault: FakeVault, cursors: Record<string, Cursor> = {}) {
-  const ledger = new AuditLedger(vault as unknown as Vault, "Audit");
+  const ledger = new AuditLedger(vault as unknown as Vault, fakeFileManager(vault), "Audit");
   const ingestor = new AuditIngestor(vault as unknown as Vault, ledger, {
     messengerRoot: "Messenger",
     address: "audit",

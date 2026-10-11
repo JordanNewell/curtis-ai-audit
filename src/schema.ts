@@ -99,7 +99,7 @@ export function validatePayload(payload: unknown): ValidationResult {
     if (typeof p.tokens !== "object" || p.tokens === null) {
       errors.push("tokens must be an object");
     } else {
-      const t = p.tokens as ReceiptTokens;
+      const t = p.tokens;
       for (const key of ["input", "output"] as const) {
         if (t[key] !== undefined && !isNonNegativeNumber(t[key])) {
           errors.push(`tokens.${key} must be a non-negative number`);

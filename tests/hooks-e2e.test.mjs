@@ -1,5 +1,5 @@
 import { describe, expect, it } from "vitest";
-import { FakeVault } from "./fake-vault";
+import { FakeVault, fakeFileManager } from "./fake-vault";
 import { AuditLedger } from "../src/ledger";
 import { AuditIngestor } from "../src/ingest";
 import { verifyLedger } from "../src/verify";
@@ -8,7 +8,7 @@ import { FAKE_SECRETS, POSITIVE, junkBodies } from "./fixtures/hook-payloads.mjs
 
 /** The whole Path C chain with in-memory vaults: payload → writer → inbox → ingest. */
 function makeIngestor(vault) {
-  const ledger = new AuditLedger(vault, "Audit");
+  const ledger = new AuditLedger(vault, fakeFileManager(vault), "Audit");
   const ingestor = new AuditIngestor(vault, ledger, {
     messengerRoot: "Messenger",
     address: "audit",

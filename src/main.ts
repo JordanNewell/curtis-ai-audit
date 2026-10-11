@@ -23,6 +23,7 @@ import {
   installAgentHooks,
   uninstallAgentHooks,
 } from "./hooks-install";
+import { HooksManualModal } from "./hooks-modal";
 
 const PLUGIN_ADDRESS = "curtis-ai-audit";
 const PRUNE_EVERY_MS = 60 * 60 * 1000;
@@ -95,7 +96,7 @@ export default class CurtisAuditPlugin extends Plugin {
   }
 
   private buildComponents(): void {
-    this.ledger = new AuditLedger(this.app.vault, this.settings.root);
+    this.ledger = new AuditLedger(this.app.vault, this.app.fileManager, this.settings.root);
     this.ingestor = new AuditIngestor(this.app.vault, this.ledger, {
       messengerRoot: this.settings.messengerRoot,
       address: this.settings.inboxAddress,
@@ -162,8 +163,7 @@ export default class CurtisAuditPlugin extends Plugin {
       }
       if (this.settings.retentionDays > 0 && Date.now() - this.lastPrune > PRUNE_EVERY_MS) {
         this.lastPrune = Date.now();
-        const dropped = await this.runPrune();
-        if (dropped > 0) console.info(`[curtis-ai-audit] pruned ${dropped} old receipt(s)`);
+        await this.runPrune();
       }
     } catch (err) {
       console.error("[curtis-ai-audit] pump failed", err);
@@ -194,13 +194,14 @@ export default class CurtisAuditPlugin extends Plugin {
 
   private async verifyNow(): Promise<void> {
     const report = await verifyLedger(this.ledger);
-    console.log("[curtis-ai-audit] verify report", report);
     if (report.issues.length === 0) {
       new Notice(
         `Ledger OK: ${report.receipts} receipt(s) across ${report.shards} shard(s) — no issues`
       );
       return;
     }
+    // necessary diagnostics: the notice points here for the per-issue detail
+    console.error("[curtis-ai-audit] verify issues", report.issues);
     const errors = report.issues.filter((i) => i.severity === "error").length;
     const warnings = report.issues.length - errors;
     new Notice(
@@ -320,15 +321,26 @@ export default class CurtisAuditPlugin extends Plugin {
     }
     const results = await installAgentHooks(this.hookIo(), paths);
     new Notice(this.hookNotice("install", results), 12000);
+    this.showManualSetup(results);
   }
 
   private async uninstallHooks(): Promise<void> {
     const results = await uninstallAgentHooks(this.hookIo());
     new Notice(this.hookNotice("uninstall", results), 12000);
+    this.showManualSetup(results);
+  }
+
+  /**
+   * Codex and Gemini targets come back as "manual": recipes the plugin will
+   * not auto-write (user-scoped or schema-unverified). Show them in a
+   * copyable modal instead of pointing the user at a console.
+   */
+  private showManualSetup(results: HookTargetResult[]): void {
+    const manual = results.filter((r) => r.action === "manual");
+    if (manual.length > 0) new HooksManualModal(this.app, manual).open();
   }
 
   private hookNotice(verb: string, results: HookTargetResult[]): string {
-    console.info(`[curtis-ai-audit] hooks ${verb}`, results);
     const summary = (actions: HookTargetResult["action"][]): string =>
       results
         .filter((r) => actions.includes(r.action))
@@ -339,7 +351,7 @@ export default class CurtisAuditPlugin extends Plugin {
     if (installed) parts.push(`${verb}ed: ${installed}`);
     if (results.some((r) => r.action === "already-installed")) parts.push("nothing to change");
     const manual = results.filter((r) => r.action === "manual");
-    if (manual.length) parts.push(`manual: ${manual.map((r) => r.target).join(", ")} (see console)`);
+    if (manual.length) parts.push(`manual: ${manual.map((r) => r.target).join(", ")}`);
     const aborted = results.filter((r) => r.action === "aborted");
     if (aborted.length) parts.push(`skipped: ${aborted.map((r) => r.target).join(", ")}`);
     if (verb === "install") parts.push("approve Claude Code project hooks once via /hooks");
@@ -347,9 +359,8 @@ export default class CurtisAuditPlugin extends Plugin {
   }
 
   async loadSettings(): Promise<void> {
-    this.settings = sanitizeSettings(
-      Object.assign({}, DEFAULT_SETTINGS, await this.loadData())
-    );
+    const stored = (await this.loadData()) as Partial<AuditSettings> | null;
+    this.settings = sanitizeSettings(Object.assign({}, DEFAULT_SETTINGS, stored));
   }
 
   async saveSettings(): Promise<void> {

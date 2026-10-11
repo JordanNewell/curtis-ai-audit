@@ -8,7 +8,7 @@
 import { describe, expect, it } from "vitest";
 import { readFileSync } from "node:fs";
 import { Vault } from "obsidian";
-import { FakeVault } from "./fake-vault";
+import { FakeVault, fakeFileManager } from "./fake-vault";
 import { AuditLedger } from "../src/ledger";
 import { AuditIngestor } from "../src/ingest";
 import { verifyLedger } from "../src/verify";
@@ -21,7 +21,7 @@ suite("real vault corpus", () => {
   it("ingests the whole session corpus cleanly", async () => {
     const content = readFileSync(inboxPath as string, "utf8");
     const vault = new FakeVault({ "Messenger/audit/inbox.md": content });
-    const ledger = new AuditLedger(vault as unknown as Vault, "Audit");
+    const ledger = new AuditLedger(vault as unknown as Vault, fakeFileManager(vault), "Audit");
     const ingestor = new AuditIngestor(vault as unknown as Vault, ledger, {
       messengerRoot: "Messenger",
       address: "audit",

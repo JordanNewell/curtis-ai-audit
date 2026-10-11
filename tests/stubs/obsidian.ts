@@ -33,6 +33,8 @@ export class TFolder extends TAbstractFile {
 
 export class Vault {}
 
+export class FileManager {}
+
 export function normalizePath(path: string): string {
   return path
     .replace(/\\/g, "/")

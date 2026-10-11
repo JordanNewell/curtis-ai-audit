@@ -3,12 +3,12 @@ import { Vault } from "obsidian";
 import { AuditLedger, shardHeader } from "../src/ledger";
 import { AuditReceiptV1, buildReceipt } from "../src/schema";
 import { encodeBlock } from "../src/protocol";
-import { FakeVault } from "./fake-vault";
+import { FakeVault, fakeFileManager } from "./fake-vault";
 
 const LEDGER_MARKER = "curtis-audit";
 
 function makeLedger(vault: FakeVault): AuditLedger {
-  return new AuditLedger(vault as unknown as Vault, "Audit");
+  return new AuditLedger(vault as unknown as Vault, fakeFileManager(vault), "Audit");
 }
 
 function makeReceipt(over: Partial<AuditReceiptV1> = {}): AuditReceiptV1 {

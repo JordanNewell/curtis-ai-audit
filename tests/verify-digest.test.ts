@@ -5,7 +5,7 @@ import { verifyLedger } from "../src/verify";
 import { buildDigest } from "../src/digest";
 import { encodeBlock } from "../src/protocol";
 import { AuditReceiptV1, buildReceipt } from "../src/schema";
-import { FakeVault } from "./fake-vault";
+import { FakeVault, fakeFileManager } from "./fake-vault";
 
 const LEDGER_MARKER = "curtis-audit";
 
@@ -29,7 +29,7 @@ function block(receipt: AuditReceiptV1): string {
 
 async function ledgerWithFiles(files: Record<string, string>): Promise<AuditLedger> {
   const vault = new FakeVault(files);
-  return new AuditLedger(vault as unknown as Vault, "Audit");
+  return new AuditLedger(vault as unknown as Vault, fakeFileManager(vault), "Audit");
 }
 
 describe("verifyLedger", () => {

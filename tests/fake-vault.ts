@@ -5,10 +5,20 @@
  * read-modify-write.
  */
 
-import { TFile, TFolder, normalizePath } from "./stubs/obsidian";
+import { FileManager, TFile, TFolder, normalizePath } from "./stubs/obsidian";
 
 function fileFor(path: string): TFile {
   return new TFile(path);
+}
+
+/** FileManager fake routing trashFile back to the vault (tests assert removal,
+ *  not where a real client's deleted-files preference would send the file). */
+export function fakeFileManager(vault: FakeVault): FileManager {
+  return {
+    trashFile: async (file: TFile) => {
+      await vault.delete(file);
+    },
+  } as unknown as FileManager;
 }
 
 export class FakeVault {
