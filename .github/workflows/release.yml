@@ -36,7 +36,7 @@ jobs:
       - name: Build
         run: npm run build
 
-      - name: Guard: committed main.js must match the build
+      - name: 'Guard: committed main.js must match the build'
         run: git diff --exit-code --stat main.js
 
       - name: Attest build provenance for release assets
