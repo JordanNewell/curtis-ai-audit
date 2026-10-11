@@ -1,3 +1,7 @@
+<div align="center">
+  <img src="assets/curtis-ai-logo.svg" width="110" alt="Curtis AI Audit — green C ring with a check">
+</div>
+
 # Curtis AI Audit
 
 **Local-first audit trail for AI agent activity in your Obsidian vault.**
@@ -18,14 +22,22 @@ plugin is *not* required — the audit inbox is just a file.
   Obsidian, parseable by anything.
 - **Ingest** — polls the OM-1 audit inbox (`Messenger/audit/inbox.md`) with
   proper cursor semantics; junk is rejected, redeliveries are deduped.
+- **Agent hooks** — `Install agent audit hooks` writes vault-scoped configs
+  (Claude Code, OpenCode) so local agents file their own receipts through the
+  bundled writer (`bin/curtis-audit-file.mjs`); Codex and Gemini get manual
+  recipes. Metadata only — tool input content is never recorded.
 - **Direct API** — in-process plugins can skip the bus:
   `window.curtisAudit.record({ agent, model, tokens, ... })`.
+- **Query** — the read side: `window.curtisAudit.query({ agent, status,
+  since, ... })` for status bars, dashboards, and other plugins.
 - **Verify** — detects malformed blocks, duplicate ids/sequences, reordered
   shards, and per-agent sequence gaps (deletions leave holes; no crypto, no
   false promises).
-- **Digest** — a rolling `Audit/digest.md`: counts, statuses, tokens, errors.
+- **Digest** — a rolling `Audit/digest.md`: counts, statuses, tokens,
+  durations, a per-day breakdown, errors.
 - **Retention off by default** — an audit trail that silently ages out is a
-  policy contradiction. Opt in if you want it.
+  policy contradiction. Opt in if you want it; each prune is itself recorded
+  as a receipt, so the gaps it leaves are self-explaining.
 
 ## Install (dev)
 
@@ -43,6 +55,8 @@ Ribbon icon or commands:
 | Write digest            | (re)write `Audit/digest.md` and open it        |
 | Prune ledger now        | manual retention pass (needs retention > 0)    |
 | Open today's ledger     | open/create today's shard                      |
+| Install agent audit hooks  | write vault-scoped hook configs (Path C)    |
+| Uninstall agent audit hooks | remove exactly what install added           |
 
 Other plugins (same window):
 
@@ -57,8 +71,20 @@ const receipt = await window.curtisAudit.record({
   subject: "Notes/question.md",
   summary: "Answered a question about the spec",
 });
-// also: .poll(), .verify(), .digest(days?)
+// also: .poll(), .verify(), .digest(days?), .query(filter)
 // workspace event: "curtis-audit:receipt"
+```
+
+The read side, for dashboards and status bars:
+
+```ts
+const errors = await window.curtisAudit.query({
+  agent: "curtis-ai-chat",
+  status: "error",
+  since: "2026-10-01",   // bounds apply to `recorded` (local write time)
+  order: "desc",         // newest first (the default)
+  limit: 20,
+});
 ```
 
 Anything that can append to a file (other device, script, agent):
@@ -74,11 +100,11 @@ See [INTEGRATION.md](./INTEGRATION.md) for wiring up `curtis-ai-chat`.
 ## Testing
 
 ```
-npm test        # 58 unit tests, in-memory vault, no Obsidian needed
+npm test        # 86 unit tests, in-memory vault, no Obsidian needed
 npm run build   # typecheck + bundle to main.js
 ```
 
 ## Status
 
-v0.1.0 — the local-first tier, deliberately. Tamper-evidence, retention
+v0.2.0 — the local-first tier, deliberately. Tamper-evidence, retention
 enforcement, and reporting are the next tier up and are not pretended here.

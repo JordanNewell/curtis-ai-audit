@@ -97,8 +97,11 @@ append to a file can file a receipt: the message body is the JSON payload
   junk never enters the ledger, and the cursor still advances.
 
 Direct (in-process) recording skips the bus entirely:
-`window.curtisAudit.record({ agent: "curtis-ai-chat", ... })`. Every written
-receipt also emits a `curtis-audit:receipt` workspace event.
+`window.curtisAudit.record({ agent: "curtis-ai-chat", ... })`. The read side
+is `window.curtisAudit.query({ agent, action, status, model, subject, since,
+until, order, limit })` — time bounds apply to `recorded` (the local fact),
+not `ts` (the sender's claim). Every written receipt also emits a
+`curtis-audit:receipt` workspace event.
 
 ## 5. Sequence numbers
 
@@ -137,6 +140,12 @@ pruned by rewriting/deleting whole shards. Pruning intentionally creates seq
 gaps; verify reports them as warnings with that caveat. Whole-shard deletion
 also means "history before the earliest remaining shard" is unknowable —
 the gaps-before-min-seq are not enumerated.
+
+Each pruning pass that drops receipts is itself recorded as an ordinary
+receipt (`action: "prune"`, agent `curtis-ai-audit`), so the gaps verify
+reports on are explained by the journal instead of only by a console line.
+The prune receipt ages out with everything else — it explains the most
+recent pruning, not all of history.
 
 ## 8. Upgrade path (deliberately unbuilt)
 

@@ -1,0 +1,12 @@
+<svg viewBox="0 0 1024 1024" xmlns="http://www.w3.org/2000/svg">
+  <!-- Traced from assets/curtis-ai-logo.png: ring center (511.5, 511.5), outer R 417.5,
+       inner R 284.5, mouth open to the right; check from (690, 516) via (737.5, 563)
+       to (831, 462), stroke 58. #0E7A45 -->
+  <path fill="#0E7A45" d="M 855.3 275.1
+    A 417.5 417.5 0 1 0 855.3 747.9
+    C 872.6 707.8 869.8 676.9 770 630.3
+    A 284.5 284.5 0 1 1 770 392.7
+    C 869.8 346.1 872.6 315.2 855.3 275.1 Z"/>
+  <path d="M 690 515.7 L 737.5 563 L 831 462" fill="none" stroke="#0E7A45"
+    stroke-width="58" stroke-linecap="round" stroke-linejoin="round"/>
+</svg>

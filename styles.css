@@ -1,1 +1,53 @@
-/* Curtis AI Audit — no custom styles yet; receipts and the digest are plain markdown. */
+/* Curtis AI Audit — brand mark in the settings header; receipts and the digest are plain markdown. */
+.curtis-audit-mark {
+  display: inline-flex;
+  align-items: center;
+  margin-right: 8px;
+}
+
+.curtis-audit-mark svg {
+  width: 22px;
+  height: 22px;
+}
+
+/* ── Settings About footer (same lockup as Curtis and Curtis Porter) ── */
+.setting-item.curtis-audit-about {
+  display: block;
+}
+.setting-item.curtis-audit-about .curtis-audit-about-title {
+  display: flex;
+  align-items: center;
+  gap: var(--size-2-2);
+  font-size: var(--font-ui-medium);
+  color: var(--text-normal);
+}
+.setting-item.curtis-audit-about .curtis-audit-about-mark {
+  flex-shrink: 0;
+}
+.setting-item.curtis-audit-about .curtis-audit-about-mark .svg-icon {
+  /* The C-ring mark is the master logo art (see icon.ts) — sized for the
+   * raster's detail; it carries its own brand ink, no theme repaint applies. */
+  width: 20px;
+  height: 20px;
+}
+.setting-item.curtis-audit-about .curtis-audit-about-desc {
+  margin: var(--size-2-2) 0 0;
+  color: var(--text-muted);
+  font-size: var(--font-ui-smallest);
+}
+/* Newell NMOJI brand button — pinned to the footer's bottom-right corner;
+ * the wrap reserves right padding so text never runs under the mark. */
+.setting-item.curtis-audit-about .curtis-audit-about-wrap {
+  position: relative;
+  padding-right: 56px;
+}
+.setting-item.curtis-audit-about .curtis-audit-about-nmoji {
+  position: absolute;
+  right: 0;
+  bottom: 0;
+}
+.setting-item.curtis-audit-about .curtis-audit-about-nmoji img {
+  display: block;
+  width: 44px;
+  height: 44px;
+}

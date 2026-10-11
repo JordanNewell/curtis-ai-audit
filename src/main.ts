@@ -1,4 +1,13 @@
-import { Notice, Plugin, TFile, TFolder, normalizePath } from "obsidian";
+import {
+  FileSystemAdapter,
+  Notice,
+  Plugin,
+  TFile,
+  TFolder,
+  addIcon,
+  normalizePath,
+} from "obsidian";
+import { CURTIS_MARK_ICON_ID, CURTIS_MARK_SVG } from "./icon";
 import { AuditLedger, shardHeader } from "./ledger";
 import { AuditIngestor, IngestResult } from "./ingest";
 import { createApi, CurtisAuditApiV1 } from "./api";
@@ -6,7 +15,14 @@ import { AuditSettings, DEFAULT_SETTINGS, sanitizeSettings } from "./settings";
 import { AuditSettingTab } from "./settings-tab";
 import { VerifyReport, verifyLedger } from "./verify";
 import { buildDigest } from "./digest";
+import { recordPruneReceipt } from "./selfaudit";
 import { ensureFolder, inboxHeader, upsertRegistryEntry, writeFile } from "./registry";
+import {
+  HookIo,
+  HookTargetResult,
+  installAgentHooks,
+  uninstallAgentHooks,
+} from "./hooks-install";
 
 const PLUGIN_ADDRESS = "curtis-ai-audit";
 const PRUNE_EVERY_MS = 60 * 60 * 1000;
@@ -23,7 +39,6 @@ export default class CurtisAuditPlugin extends Plugin {
   async onload(): Promise<void> {
     await this.loadSettings();
     this.buildComponents();
-    window.curtisAudit = this.api;
 
     // Join the OM-1 registry only when a bus root already exists — never
     // create one on the user's behalf; the messenger plugin may not be
@@ -31,7 +46,8 @@ export default class CurtisAuditPlugin extends Plugin {
     await this.joinBusIfPresent();
     await this.ledger.ensureDirs();
 
-    this.addRibbonIcon("scroll-text", "Curtis AI Audit", () => void this.checkNow());
+    addIcon(CURTIS_MARK_ICON_ID, CURTIS_MARK_SVG);
+    this.addRibbonIcon(CURTIS_MARK_ICON_ID, "Curtis AI Audit", () => void this.checkNow());
 
     this.addCommand({
       id: "check",
@@ -57,6 +73,16 @@ export default class CurtisAuditPlugin extends Plugin {
       id: "open-today",
       name: "Open today's ledger",
       callback: () => void this.openToday(),
+    });
+    this.addCommand({
+      id: "install-hooks",
+      name: "Install agent audit hooks",
+      callback: () => void this.installHooks(),
+    });
+    this.addCommand({
+      id: "uninstall-hooks",
+      name: "Uninstall agent audit hooks",
+      callback: () => void this.uninstallHooks(),
     });
 
     // 1s heartbeat gated by the poll-interval setting; setting changes apply live.
@@ -136,7 +162,7 @@ export default class CurtisAuditPlugin extends Plugin {
       }
       if (this.settings.retentionDays > 0 && Date.now() - this.lastPrune > PRUNE_EVERY_MS) {
         this.lastPrune = Date.now();
-        const dropped = await this.ledger.prune(this.settings.retentionDays);
+        const dropped = await this.runPrune();
         if (dropped > 0) console.info(`[curtis-ai-audit] pruned ${dropped} old receipt(s)`);
       }
     } catch (err) {
@@ -197,10 +223,28 @@ export default class CurtisAuditPlugin extends Plugin {
       if (notice) new Notice("Retention is off (set it above 0 first)");
       return;
     }
-    const dropped = await this.ledger.prune(this.settings.retentionDays);
-    if (notice) {
-      new Notice(dropped === 0 ? "Nothing to prune" : `Pruned ${dropped} old receipt(s)`);
+    try {
+      const dropped = await this.runPrune();
+      if (notice) {
+        new Notice(dropped === 0 ? "Nothing to prune" : `Pruned ${dropped} old receipt(s)`);
+      }
+    } catch (err) {
+      console.error("[curtis-ai-audit] prune failed", err);
+      if (notice) new Notice("Prune failed — see console", 8000);
     }
+  }
+
+  /**
+   * Retention pass. A nonzero drop is journaled as an ordinary `prune`
+   * receipt, so the sequence gaps verify reports on are explained by the
+   * ledger itself (SPEC §7) rather than only by a console line.
+   */
+  private async runPrune(): Promise<number> {
+    const days = this.settings.retentionDays;
+    if (days <= 0) return 0;
+    const dropped = await this.ledger.prune(days);
+    if (dropped > 0) await recordPruneReceipt(this.api, dropped, days);
+    return dropped;
   }
 
   private async openToday(): Promise<void> {
@@ -218,6 +262,82 @@ export default class CurtisAuditPlugin extends Plugin {
     if (file instanceof TFile) {
       await this.app.workspace.getLeaf(true).openFile(file);
     }
+  }
+
+  /**
+   * Path C (INTEGRATION.md): vault-scoped hook configs that make local agents
+   * file receipts to the audit inbox via the bundled writer script. Claude
+   * Code settings are merged in place; only this plugin's entries are ever
+   * removed by uninstall.
+   */
+  private hookPaths(): { writerPath: string; inboxPath: string } {
+    const adapter = this.app.vault.adapter as FileSystemAdapter;
+    const base = adapter.getBasePath().replace(/\\/g, "/");
+    const root = this.settings.messengerRoot || "Messenger";
+    return {
+      writerPath: `${base}/${this.manifest.dir}/bin/curtis-audit-file.mjs`,
+      inboxPath: `${base}/${root}/${this.settings.inboxAddress}/inbox.md`,
+    };
+  }
+
+  private hookIo(): HookIo {
+    const adapter = this.app.vault.adapter;
+    return {
+      readText: async (p) => {
+        try {
+          return await adapter.read(normalizePath(p));
+        } catch {
+          return null;
+        }
+      },
+      writeText: async (p, content) => {
+        const normalized = normalizePath(p);
+        const dir = normalized.split("/").slice(0, -1).join("/");
+        if (dir) {
+          try {
+            await adapter.mkdir(dir);
+          } catch {
+            // already exists
+          }
+        }
+        await adapter.write(normalized, content);
+      },
+    };
+  }
+
+  private async installHooks(): Promise<void> {
+    const paths = this.hookPaths();
+    const writerNote = normalizePath(`${this.manifest.dir}/bin/curtis-audit-file.mjs`);
+    if (!(await this.app.vault.adapter.exists(writerNote))) {
+      new Notice("Audit hooks: writer script missing — reinstall the plugin folder", 10000);
+      return;
+    }
+    const results = await installAgentHooks(this.hookIo(), paths);
+    new Notice(this.hookNotice("install", results), 12000);
+  }
+
+  private async uninstallHooks(): Promise<void> {
+    const results = await uninstallAgentHooks(this.hookIo());
+    new Notice(this.hookNotice("uninstall", results), 12000);
+  }
+
+  private hookNotice(verb: string, results: HookTargetResult[]): string {
+    console.info(`[curtis-ai-audit] hooks ${verb}`, results);
+    const summary = (actions: HookTargetResult["action"][]): string =>
+      results
+        .filter((r) => actions.includes(r.action))
+        .map((r) => r.target)
+        .join(", ");
+    const parts: string[] = [];
+    const installed = summary(["added", "updated", "removed"]);
+    if (installed) parts.push(`${verb}ed: ${installed}`);
+    if (results.some((r) => r.action === "already-installed")) parts.push("nothing to change");
+    const manual = results.filter((r) => r.action === "manual");
+    if (manual.length) parts.push(`manual: ${manual.map((r) => r.target).join(", ")} (see console)`);
+    const aborted = results.filter((r) => r.action === "aborted");
+    if (aborted.length) parts.push(`skipped: ${aborted.map((r) => r.target).join(", ")}`);
+    if (verb === "install") parts.push("approve Claude Code project hooks once via /hooks");
+    return `Audit hooks — ${parts.join(" · ")}`;
   }
 
   async loadSettings(): Promise<void> {

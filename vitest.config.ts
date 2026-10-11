@@ -8,7 +8,8 @@ export default defineConfig({
     },
   },
   test: {
-    include: ["tests/**/*.test.ts"],
+    // .mjs tests exist to import bin/ scripts (plain Node ESM) alongside TS modules
+    include: ["tests/**/*.test.ts", "tests/**/*.test.mjs"],
     environment: "node",
   },
 });

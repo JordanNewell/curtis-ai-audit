@@ -7,6 +7,16 @@
 import { AuditLedger } from "./ledger";
 import { AuditReceiptV1 } from "./schema";
 
+/** Compact wall-clock formatting for the digest summary line. */
+function formatDuration(ms: number): string {
+  if (ms < 1000) return `${Math.round(ms)}ms`;
+  const seconds = ms / 1000;
+  if (seconds < 60) return `${seconds.toFixed(1)}s`;
+  const minutes = Math.floor(seconds / 60);
+  if (minutes < 60) return `${minutes}m ${Math.round(seconds % 60)}s`;
+  return `${Math.floor(minutes / 60)}h ${minutes % 60}m`;
+}
+
 export async function buildDigest(
   ledger: AuditLedger,
   opts: { days?: number; now?: Date } = {}
@@ -37,21 +47,53 @@ export async function buildDigest(
   let abortCount = 0;
   let tokensIn = 0;
   let tokensOut = 0;
+  let totalMs = 0;
   for (const r of all) {
     if (r.status === "ok") okCount++;
     else if (r.status === "error") errCount++;
     else abortCount++;
     if (typeof r.tokens?.input === "number") tokensIn += r.tokens.input;
     if (typeof r.tokens?.output === "number") tokensOut += r.tokens.output;
+    if (typeof r.durationMs === "number") totalMs += r.durationMs;
   }
   const tokenPart =
     tokensIn > 0 || tokensOut > 0 ? `, ${tokensIn.toLocaleString()} in / ${tokensOut.toLocaleString()} out` : "";
+  const durationPart = totalMs > 0 ? `, total duration ${formatDuration(totalMs)}` : "";
   lines.push(
-    `**${all.length}** receipts — ${okCount} ok, ${errCount} error, ${abortCount} aborted${tokenPart}.`
+    `**${all.length}** receipts — ${okCount} ok, ${errCount} error, ${abortCount} aborted${tokenPart}${durationPart}.`
   );
   lines.push("");
 
-  const agentRows = new Map<string, { total: number; ok: number; error: number; aborted: number }>();
+  const byDay = new Map<string, { total: number; ok: number; error: number; aborted: number }>();
+  for (const r of all) {
+    const day = r.recorded.slice(0, 10);
+    let row = byDay.get(day);
+    if (!row) {
+      row = { total: 0, ok: 0, error: 0, aborted: 0 };
+      byDay.set(day, row);
+    }
+    row.total++;
+    if (r.status === "ok") row.ok++;
+    else if (r.status === "error") row.error++;
+    else row.aborted++;
+  }
+  // one row per calendar day only makes sense once there is more than one
+  if (byDay.size > 1) {
+    lines.push("### By day");
+    lines.push("");
+    lines.push("| day | receipts | ok | error | aborted |");
+    lines.push("| --- | --- | --- | --- | --- |");
+    for (const day of Array.from(byDay.keys()).sort()) {
+      const row = byDay.get(day) as { total: number; ok: number; error: number; aborted: number };
+      lines.push(`| ${day} | ${row.total} | ${row.ok} | ${row.error} | ${row.aborted} |`);
+    }
+    lines.push("");
+  }
+
+  const agentRows = new Map<
+    string,
+    { total: number; ok: number; error: number; aborted: number; tokensIn?: number; tokensOut?: number }
+  >();
   const actionCounts = new Map<string, number>();
   for (const r of all) {
     let row = agentRows.get(r.agent);
@@ -63,14 +105,29 @@ export async function buildDigest(
     if (r.status === "ok") row.ok++;
     else if (r.status === "error") row.error++;
     else row.aborted++;
+    if (typeof r.tokens?.input === "number") {
+      row.tokensIn = (row.tokensIn ?? 0) + r.tokens.input;
+    }
+    if (typeof r.tokens?.output === "number") {
+      row.tokensOut = (row.tokensOut ?? 0) + r.tokens.output;
+    }
     actionCounts.set(r.action, (actionCounts.get(r.action) ?? 0) + 1);
   }
 
-  lines.push("| agent | receipts | ok | error | aborted |");
-  lines.push("| --- | --- | --- | --- | --- |");
+  lines.push("| agent | receipts | ok | error | aborted | tokens in | tokens out |");
+  lines.push("| --- | --- | --- | --- | --- | --- | --- |");
   for (const agent of Array.from(agentRows.keys()).sort()) {
-    const row = agentRows.get(agent) as { total: number; ok: number; error: number; aborted: number };
-    lines.push(`| ${agent} | ${row.total} | ${row.ok} | ${row.error} | ${row.aborted} |`);
+    const row = agentRows.get(agent) as {
+      total: number;
+      ok: number;
+      error: number;
+      aborted: number;
+      tokensIn?: number;
+      tokensOut?: number;
+    };
+    const tin = row.tokensIn !== undefined ? row.tokensIn.toLocaleString() : "—";
+    const tout = row.tokensOut !== undefined ? row.tokensOut.toLocaleString() : "—";
+    lines.push(`| ${agent} | ${row.total} | ${row.ok} | ${row.error} | ${row.aborted} | ${tin} | ${tout} |`);
   }
   lines.push("");
   lines.push("| action | count |");

@@ -123,16 +123,48 @@ describe("buildDigest", () => {
     const digest = await buildDigest(ledger, { now: new Date() });
     expect(digest).toContain("**2** receipts — 1 ok, 1 error, 0 aborted");
     expect(digest).toContain("100 in / 40 out");
-    expect(digest).toContain("| curtis-ai-chat | 1 | 1 | 0 | 0 |");
-    expect(digest).toContain("| other-agent | 1 | 0 | 1 | 0 |");
+    expect(digest).toContain("| curtis-ai-chat | 1 | 1 | 0 | 0 | 100 | 40 |");
+    expect(digest).toContain("| other-agent | 1 | 0 | 1 | 0 | — | — |");
     expect(digest).toContain("| inference | 2 |");
     expect(digest).toContain("provider 500");
     expect(digest).toContain("### Latest receipts");
+    // single calendar day → no per-day breakdown
+    expect(digest).not.toContain("### By day");
   });
 
   it("handles an empty period", async () => {
     const ledger = await ledgerWithFiles({});
     const digest = await buildDigest(ledger, { now: new Date() });
     expect(digest).toContain("No receipts in this period.");
+  });
+
+  it("adds a per-day table when the period spans multiple days", async () => {
+    const now = new Date("2026-10-10T12:00:00.000Z");
+    const today = "2026-10-10";
+    const yesterday = "2026-10-09";
+    const ledger = await ledgerWithFiles({
+      [`Audit/ledger/${today}.md`]:
+        shardHeader(today) +
+        block(makeReceipt({ seq: 0, recorded: `${today}T01:00:00.000Z` })) +
+        block(makeReceipt({ seq: 1, status: "error", recorded: `${today}T02:00:00.000Z` })),
+      [`Audit/ledger/${yesterday}.md`]:
+        shardHeader(yesterday) + block(makeReceipt({ seq: 0, recorded: `${yesterday}T23:00:00.000Z` })),
+    });
+    const digest = await buildDigest(ledger, { days: 2, now });
+    expect(digest).toContain("### By day");
+    expect(digest).toContain(`| ${yesterday} | 1 | 1 | 0 | 0 |`);
+    expect(digest).toContain(`| ${today} | 2 | 1 | 1 | 0 |`);
+  });
+
+  it("sums durations into the summary line", async () => {
+    const day = new Date().toISOString().slice(0, 10);
+    const ledger = await ledgerWithFiles({
+      [`Audit/ledger/${day}.md`]:
+        shardHeader(day) +
+        block(makeReceipt({ seq: 0, durationMs: 83000, recorded: `${day}T01:00:00.000Z` })) +
+        block(makeReceipt({ seq: 1, durationMs: 1200, recorded: `${day}T02:00:00.000Z` })),
+    });
+    const digest = await buildDigest(ledger, { now: new Date() });
+    expect(digest).toContain("total duration 1m 24s");
   });
 });

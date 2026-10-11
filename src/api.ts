@@ -12,6 +12,7 @@ import { AuditIngestor, IngestResult } from "./ingest";
 import { AuditReceiptV1, ReceiptPayload, buildReceipt, validatePayload } from "./schema";
 import { VerifyReport, verifyLedger } from "./verify";
 import { buildDigest } from "./digest";
+import { ReceiptQuery, queryReceipts } from "./query";
 
 export interface CurtisAuditApiV1 {
   version: 1;
@@ -23,6 +24,8 @@ export interface CurtisAuditApiV1 {
   verify(): Promise<VerifyReport>;
   /** Markdown digest of the last `days` days (default 1). */
   digest(days?: number): Promise<string>;
+  /** Filter the ledger: agent/action/status/model/subject, `recorded` bounds. */
+  query(query?: ReceiptQuery): Promise<AuditReceiptV1[]>;
 }
 
 declare global {
@@ -56,5 +59,6 @@ export function createApi(
     poll: () => ingestor.poll(),
     verify: () => verifyLedger(ledger),
     digest: (days) => buildDigest(ledger, { days: days ?? 1 }),
+    query: async (query) => queryReceipts(await ledger.readAll(), query),
   };
 }

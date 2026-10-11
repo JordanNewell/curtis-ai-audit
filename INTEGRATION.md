@@ -1,6 +1,6 @@
 # Integrating agents with Curtis AI Audit
 
-Two paths, pick by where the agent runs.
+Three paths, pick by where the agent runs.
 
 ## Path A — in-Obsidian plugins (curtis-ai-chat, other plugins)
 
@@ -76,6 +76,34 @@ Notes:
 - If the messenger plugin is installed, its `window.obsidianMessenger`
   client API works too — same inbox, same format.
 
+## Path C — local agents via hooks (installed by the plugin)
+
+Claude Code, OpenCode, Codex and Gemini all grew hook/event systems. The
+`Install agent audit hooks` command writes vault-scoped configs that make
+them file receipts through the bundled writer `bin/curtis-audit-file.mjs`
+(JSON on stdin → one OM-1 block appended to the audit inbox; always exits 0,
+never breaks the agent's run).
+
+- **Claude Code** — merges a `PostToolUse` (per tool call) and a `Stop`
+  (per turn, `action: "agent-turn"`) entry into `.claude/settings.json`;
+  unrelated config is preserved, a second install is a no-op. Project hooks
+  require one-time user approval via `/hooks` — by design.
+- **OpenCode** — writes `.opencode/plugin/curtis-audit.js`, a generated
+  plugin that spawns the writer after each tool call. Best-effort payload
+  mapping (OpenCode's hook shape is still settling).
+- **Codex CLI** — manual: add the `notify` line printed by the command to
+  user-scoped `~/.codex/config.toml`. Turn-level receipts only.
+- **Gemini CLI** — manual for now: its hook schema is still settling; the
+  command prints the recipe.
+
+Uninstall removes exactly what install added (entries are tagged by the
+writer filename) and touches nothing else. Malformed existing JSON aborts
+that target untouched.
+
+**Privacy rule, enforced in the writer:** only the tool name and path-like
+fields (file paths, URLs) reach the ledger. Command text, prompt text, and
+note contents are dropped at the source — see the privacy posture below.
+
 ## Privacy posture
 
 The ledger records what the *caller* puts in it. Recommended posture for a
@@ -87,8 +115,12 @@ plaintext vault. The `detail` field exists for the cases where you do.
 ## What you get back
 
 - `Audit/ledger/YYYY-MM-DD.md` — the receipts, human-readable in Obsidian.
+- `window.curtisAudit.query({ agent, status, since, ... })` — the read side,
+  for status bars and dashboards: filters by agent/action/status/model/
+  subject prefix, bounds on `recorded`, `order` + `limit`.
 - `Verify ledger` — catches malformed blocks, duplicates, reordering, and
   deletions (sequence gaps), honestly scoped: it detects the casual cases,
   it does not defeat a determined editor (SPEC §6).
-- `Audit/digest.md` — counts, statuses, tokens, recent errors.
+- `Audit/digest.md` — counts, statuses, tokens, durations, a per-day
+  breakdown, recent errors.
 - `curtis-audit:receipt` workspace event after every written receipt.

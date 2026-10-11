@@ -3,6 +3,7 @@ import { Vault } from "obsidian";
 import { AuditLedger } from "../src/ledger";
 import { AuditIngestor } from "../src/ingest";
 import { CurtisAuditApiV1, createApi } from "../src/api";
+import { recordPruneReceipt } from "../src/selfaudit";
 import { sanitizeSettings, DEFAULT_SETTINGS } from "../src/settings";
 import { encodeBlock } from "../src/protocol";
 import { FakeVault } from "./fake-vault";
@@ -70,6 +71,37 @@ describe("api.poll", () => {
     const { api } = makeApi(vault);
     const result = await api.poll();
     expect(result.receipts).toBe(1);
+  });
+});
+
+describe("api.query", () => {
+  it("reads recorded receipts back, filtered and ordered", async () => {
+    const { api } = makeApi(new FakeVault());
+    await api.record({ agent: "curtis-ai-chat", action: "inference", ts: "2026-10-09T00:00:00.000Z" });
+    await api.record({ agent: "research-agent", action: "tool-call" });
+    const all = await api.query();
+    expect(all).toHaveLength(2);
+    expect(all[0].agent).toBe("research-agent"); // newest first
+
+    const chat = await api.query({ agent: "curtis-ai-chat" });
+    expect(chat).toHaveLength(1);
+    expect(chat[0].action).toBe("inference");
+
+    const oldest = await api.query({ order: "asc", limit: 1 });
+    expect(oldest[0].agent).toBe("curtis-ai-chat");
+  });
+});
+
+describe("recordPruneReceipt", () => {
+  it("journals a prune as an ordinary receipt", async () => {
+    const { api, ledger } = makeApi(new FakeVault());
+    const receipt = await recordPruneReceipt(api, 3, 30);
+    expect(receipt.agent).toBe("curtis-ai-audit");
+    expect(receipt.action).toBe("prune");
+    expect(receipt.summary).toContain("3 receipt(s)");
+    const all = await ledger.readAll();
+    expect(all).toHaveLength(1);
+    expect(all[0].detail).toEqual({ dropped: 3, retentionDays: 30 });
   });
 });
 

@@ -1,5 +1,7 @@
-import { App, PluginSettingTab, Setting } from "obsidian";
+import { App, PluginSettingTab, Setting, setIcon } from "obsidian";
 import type CurtisAuditPlugin from "./main";
+import { CURTIS_MARK_ICON_ID } from "./icon";
+import { NMOJI_DATA_URI } from "./nmoji";
 
 export class AuditSettingTab extends PluginSettingTab {
   private plugin: CurtisAuditPlugin;
@@ -12,7 +14,9 @@ export class AuditSettingTab extends PluginSettingTab {
   display(): void {
     const { containerEl } = this;
     containerEl.empty();
-    containerEl.createEl("h2", { text: "Curtis AI Audit" });
+    const heading = containerEl.createEl("h2");
+    setIcon(heading.createSpan({ cls: "curtis-audit-mark" }), CURTIS_MARK_ICON_ID);
+    heading.appendText("Curtis AI Audit");
 
     new Setting(containerEl)
       .setName("Ledger folder")
@@ -86,5 +90,44 @@ export class AuditSettingTab extends PluginSettingTab {
           await this.plugin.saveSettings();
         })
       );
+
+    this.addAbout();
+  }
+
+  // About footer — same lockup as the Curtis and Curtis Porter settings
+  // footers: the brand mark, version, one-line pitch, author, and the Newell
+  // NMOJI button pinned bottom-right. Everything lives in one wrapper div
+  // because settingEl is a flex row and bare children would sit side by side.
+  private addAbout(): void {
+    const about = new Setting(this.containerEl);
+    about.settingEl.addClass("curtis-audit-about");
+    about.settingEl.empty();
+
+    const wrap = about.settingEl.createDiv({ cls: "curtis-audit-about-wrap" });
+    const title = wrap.createDiv({ cls: "curtis-audit-about-title" });
+    const mark = title.createSpan({ cls: "curtis-audit-about-mark", attr: { "aria-hidden": "true" } });
+    // Registered by main.ts (addIcon) at startup.
+    setIcon(mark, CURTIS_MARK_ICON_ID);
+    title.appendText(`Curtis AI Audit v${this.plugin.manifest.version}`);
+
+    wrap.createEl("p", {
+      cls: "curtis-audit-about-desc",
+      text:
+        "Audit trail for Obsidian — every AI agent inference gets an append-only " +
+        "markdown receipt, with ingest, query, verify and digest. Local-first, open source.",
+    });
+
+    const author = wrap.createEl("p", { cls: "curtis-audit-about-desc" });
+    author.appendText("By ");
+    const link = author.createEl("a", { href: "https://github.com/JordanNewell/curtis-ai-audit" });
+    link.setText("Jordan Newell");
+
+    // Author brand mark, pinned to the footer's bottom-right corner (CSS).
+    const nmoji = wrap.createDiv({ cls: "curtis-audit-about-nmoji" });
+    const nmojiLink = nmoji.createEl("a", {
+      href: "https://github.com/JordanNewell",
+      attr: { "aria-label": "Newell" },
+    });
+    nmojiLink.createEl("img", { attr: { src: NMOJI_DATA_URI, alt: "" } });
   }
 }
