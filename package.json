@@ -1,6 +1,6 @@
 {
   "name": "curtis-ai-audit",
-  "version": "0.2.3",
+  "version": "0.2.4",
   "description": "Local-first audit trail for AI agent activity in your vault. Every inference gets an append-only markdown receipt. Speaks OM-1 (Obsidian Messenger).",
   "main": "main.js",
   "private": true,
