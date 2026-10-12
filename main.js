@@ -2,6 +2,9 @@
 Curtis AI Audit — local-first audit trail for AI agent activity.
 Every agent inference gets an append-only markdown receipt in the vault.
 Speaks OM-1 (Obsidian Messenger protocol). See SPEC.md.
+
+Copyright © 2026 Jordan Newell. All rights reserved.
+SPDX-License-Identifier: BUSL-1.1 — full terms in LICENSE.
 */
 
 "use strict";

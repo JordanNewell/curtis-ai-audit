@@ -1,3 +1,11 @@
+/*
+ * Curtis AI Audit — Copyright © 2026 Jordan Newell. All rights reserved.
+ * SPDX-License-Identifier: BUSL-1.1
+ * Noncommercial production use permitted; commercial use requires a written
+ * license from the author. This license converts to MIT at the Change Date —
+ * full terms in LICENSE (https://mariadb.com/bsl11/).
+ */
+
 /**
  * Brand mark for the ribbon and settings header. Geometry is traced from
  * assets/curtis-ai-logo.png; keep the two in sync when the brand updates.

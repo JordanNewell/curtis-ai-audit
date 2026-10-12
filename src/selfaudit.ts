@@ -1,3 +1,11 @@
+/*
+ * Curtis AI Audit — Copyright © 2026 Jordan Newell. All rights reserved.
+ * SPDX-License-Identifier: BUSL-1.1
+ * Noncommercial production use permitted; commercial use requires a written
+ * license from the author. This license converts to MIT at the Change Date —
+ * full terms in LICENSE (https://mariadb.com/bsl11/).
+ */
+
 /**
  * The ledger watches itself. Retention pruning rewrites shards and leaves
  * sequence gaps (SPEC §7); recording each pass as an ordinary receipt keeps

@@ -1,3 +1,11 @@
+/*
+ * Curtis AI Audit — Copyright © 2026 Jordan Newell. All rights reserved.
+ * SPDX-License-Identifier: BUSL-1.1
+ * Noncommercial production use permitted; commercial use requires a written
+ * license from the author. This license converts to MIT at the Change Date —
+ * full terms in LICENSE (https://mariadb.com/bsl11/).
+ */
+
 // Newell NMOJI — the author brand button pinned to the settings About
 // footer. Embedded as a data URI so the plugin stays one distributable;
 // source art lives outside the repo (128px hand-off from the 1024px master).
