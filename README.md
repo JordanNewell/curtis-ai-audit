@@ -46,8 +46,9 @@ plugin is *not* required — the audit inbox is just a file.
 
 From a [release](../../releases): download `main.js`, `manifest.json`, and
 `styles.css` into `<vault>/.obsidian/plugins/curtis-ai-audit/`, then enable
-the plugin in Obsidian (Settings → Community plugins). Once accepted into the
-community directory it installs from there directly.
+the plugin in Obsidian (Settings → Community plugins). Not distributed via the
+Obsidian community directory; [BRAT](https://github.com/TfTHacker/obsidian42-brat)
+can track this repo for updates.
 
 From source: clone this repo into
 `<vault>/.obsidian/plugins/curtis-ai-audit/`, run
@@ -121,4 +122,10 @@ Requires Obsidian 1.13.0+ (declarative settings).
 
 ## License
 
-[MIT](./LICENSE) © Jordan Newell
+Source-available under the [Business Source License 1.1](./LICENSE) (BUSL-1.1)
+© Jordan Newell. Copying, modifying, and redistributing the code is always
+allowed. **Production use is permitted for personal and noncommercial
+purposes; any commercial use requires a separate written license from the
+author** — open a GitHub Discussion to inquire. Each release converts to MIT
+four years after it ships (Change Date: 2030-10-12). Releases up to and
+including v0.2.2 were published under MIT and remain MIT.
