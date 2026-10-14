@@ -37,11 +37,12 @@ export const DEFAULT_SETTINGS: AuditSettings = {
 
 function cleanPath(value: unknown, fallback: string): string {
   if (typeof value !== "string") return fallback;
+  // trim first so trailing whitespace cannot protect a trailing separator
   const cleaned = value
+    .trim()
     .replace(/\\/g, "/")
     .replace(/\/{2,}/g, "/")
-    .replace(/^\/+|\/+$/g, "")
-    .trim();
+    .replace(/^\/+|\/+$/g, "");
   return cleaned || fallback;
 }
 
@@ -53,18 +54,19 @@ export function sanitizeSettings(raw: Partial<AuditSettings> | null | undefined)
   const s = raw ?? {};
   return {
     root: cleanPath(s.root, DEFAULT_SETTINGS.root),
+    // same cleaning as root, but a non-string falls back to the default
+    // while a string that cleans to nothing stays "" (bus integration off)
     messengerRoot:
       typeof s.messengerRoot === "string"
-        ? s.messengerRoot
-            .replace(/\\/g, "/")
-            .replace(/\/{2,}/g, "/")
-            .replace(/^\/+|\/+$/g, "")
-            .trim()
+        ? cleanPath(s.messengerRoot, "")
         : DEFAULT_SETTINGS.messengerRoot,
     inboxAddress:
       typeof s.inboxAddress === "string" && ADDRESS_RE.test(s.inboxAddress)
         ? s.inboxAddress
         : DEFAULT_SETTINGS.inboxAddress,
+    // fractional input floors like retentionDays (1.9 → 1); a fraction below
+    // the minimum (0.5) lands on the clamp floor of 1 rather than falling
+    // back to the default — only falsy input takes the default
     pollSeconds: clamp(Math.floor(Number(s.pollSeconds) || DEFAULT_SETTINGS.pollSeconds), 1, 3600),
     retentionDays: clamp(Math.floor(Number(s.retentionDays) || 0), 0, 36500),
     debug: Boolean(s.debug),

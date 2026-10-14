@@ -167,6 +167,25 @@ describe("AuditLedger.prune", () => {
     expect(await ledger.readAll()).toHaveLength(1);
   });
 
+  it("countPrunable previews the drop count without touching shards", async () => {
+    const vault = new FakeVault();
+    const ledger = makeLedger(vault);
+    await ledger.ensureDirs();
+
+    const now = Date.now();
+    const oldDay = new Date(now - 10 * 86400000).toISOString().slice(0, 10);
+    const recentDay = new Date(now - 86400000).toISOString().slice(0, 10);
+    await appendNew(ledger, { recorded: `${oldDay}T12:00:00.000Z`, summary: "ancient" });
+    await appendNew(ledger, { recorded: `${oldDay}T13:00:00.000Z`, summary: "also ancient" });
+    await appendNew(ledger, { recorded: `${recentDay}T12:00:00.000Z`, summary: "yesterday" });
+    await appendNew(ledger, { summary: "today" });
+
+    expect(await ledger.countPrunable(3)).toBe(2);
+    expect(await ledger.countPrunable(0)).toBe(0);
+    // read-only: nothing was pruned
+    expect(await ledger.readAll()).toHaveLength(4);
+  });
+
   it("rewrites partially-kept shards with the header intact", async () => {
     const vault = new FakeVault();
     const ledger = makeLedger(vault);
@@ -201,6 +220,63 @@ describe("AuditLedger.prune", () => {
     expect(read.receipts[0].seq).toBe(1);
   });
 
+  it("preserves a concurrent append that lands between the read and the rewrite", async () => {
+    // The old prune did readShard → vault.modify(full content), so an append
+    // interleaving between the two awaits was silently dropped by the stale
+    // rewrite. The rewrite must go through the same atomic process primitive
+    // append uses, re-deriving the kept set from the fresh content.
+    const day = today();
+    class InterleavingVault extends FakeVault {
+      fired = false;
+      async read(file: TFile): Promise<string> {
+        const data = await super.read(file);
+        const p = normalizePath(file.path);
+        if (!this.fired && p === `Audit/ledger/${day}.md`) {
+          this.fired = true;
+          // a concurrent writer appends before prune's rewrite runs
+          this.files.set(
+            p,
+            data +
+              encodeBlock(
+                LEDGER_MARKER,
+                makeReceipt({
+                  seq: 9,
+                  recorded: new Date().toISOString(),
+                  summary: "concurrent",
+                }) as unknown as Record<string, unknown>,
+                "c"
+              )
+          );
+        }
+        return data; // prune's pre-pass still sees the stale snapshot
+      }
+    }
+    const vault = new InterleavingVault({
+      [`Audit/ledger/${day}.md`]:
+        shardHeader(day) +
+        encodeBlock(
+          LEDGER_MARKER,
+          makeReceipt({
+            seq: 0,
+            recorded: new Date(Date.now() - 10 * 86400000).toISOString(),
+            summary: "ancient",
+          }) as unknown as Record<string, unknown>,
+          "a"
+        ) +
+        encodeBlock(
+          LEDGER_MARKER,
+          makeReceipt({ seq: 1, recorded: new Date().toISOString(), summary: "kept" }) as unknown as Record<string, unknown>,
+          "k"
+        ),
+    });
+    const ledger = makeLedger(vault);
+
+    expect(await ledger.prune(3)).toBe(1);
+
+    const read = await ledger.readShard(`Audit/ledger/${day}.md`);
+    expect(read.receipts.map((r) => r.summary).sort()).toEqual(["concurrent", "kept"].sort());
+  });
+
   it("leaves non-ledger content in the ledger folder alone", async () => {
     const vault = new FakeVault();
     const ledger = makeLedger(vault);
@@ -227,6 +303,25 @@ describe("AuditLedger.append (guards)", () => {
     expect(vault.processCalls).toBeGreaterThan(0);
     const read = await ledger.readShard(ledger.shardPath(today()));
     expect(read.receipts.map((r) => r.summary)).toEqual(["first", "second"]);
+  });
+
+  it("throws when shard creation fails and no shard exists to retry against", async () => {
+    class BrokenVault extends FakeVault {
+      async create(path: string): Promise<void> {
+        if (normalizePath(path).includes("/ledger/")) {
+          throw new Error("disk full");
+        }
+        return super.create(path);
+      }
+    }
+    const vault = new BrokenVault();
+    const ledger = makeLedger(vault);
+    await ledger.ensureDirs();
+    const receipt = makeReceipt({ summary: "lost" });
+    receipt.seq = await ledger.claimSeq(receipt.agent);
+    // a failed create with no TFile at the path is a real failure — appending
+    // must not report success while the receipt went nowhere
+    await expect(ledger.append(receipt)).rejects.toThrow(/disk full/);
   });
 
   it("recovers when shard creation races another writer", async () => {

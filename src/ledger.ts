@@ -104,12 +104,17 @@ export class AuditLedger {
     }
     try {
       await this.vault.create(path, shardHeader(day) + block);
-    } catch {
+    } catch (err) {
       // raced with another writer creating the file — retry as an existing file
       const existing = this.vault.getAbstractFileByPath(path);
       if (existing instanceof TFile) {
         await mutateFileAtomic(this.vault, path, (content) => content.replace(/\s+$/, "\n\n") + block);
+        return;
       }
+      // no file to retry against: a TFolder took the path, or creation failed
+      // outright. Swallowing this would report success while the receipt was
+      // never written — surface the failure to the caller.
+      throw err;
     }
   }
 
@@ -169,6 +174,25 @@ export class AuditLedger {
   }
 
   /**
+   * What prune(maxAgeDays) would drop — a read-only preview so callers can
+   * journal the prune receipt BEFORE the destructive pass (SPEC §7: a failed
+   * receipt write after pruning would leave the gaps unexplained).
+   */
+  async countPrunable(maxAgeDays: number): Promise<number> {
+    if (maxAgeDays <= 0) return 0;
+    const cutoff = Date.now() - maxAgeDays * 86400000;
+    let dropped = 0;
+    for (const path of this.listShards()) {
+      const file = this.vault.getAbstractFileByPath(path);
+      if (!(file instanceof TFile)) continue;
+      const read = await this.readShard(path);
+      if (read.blocks === 0) continue;
+      dropped += read.receipts.filter((r) => Date.parse(r.recorded) < cutoff).length;
+    }
+    return dropped;
+  }
+
+  /**
    * Drop receipts recorded before the cutoff. Unlike mail GC, retention
    * defaults to off (0 = keep everything) — an audit trail that silently
    * ages out is a policy contradiction. Pruning whole shards leaves seq
@@ -185,13 +209,24 @@ export class AuditLedger {
       const read = await this.readShard(path);
       if (read.blocks === 0) continue; // leave non-ledger content alone
       const kept = read.receipts.filter((r) => Date.parse(r.recorded) >= cutoff);
-      dropped += read.receipts.length - kept.length;
       if (kept.length === 0) {
+        dropped += read.receipts.length - kept.length;
         await this.fileManager.trashFile(file);
       } else if (kept.length !== read.receipts.length) {
+        // Rewrite through the same atomic primitive append uses: the kept set
+        // is recomputed from the fresh content inside the critical section, so
+        // an append that lands after the pre-pass read is not clobbered.
         const day = file.name.replace(/\.md$/, "");
-        const content = shardHeader(day) + kept.map(renderBlock).join("");
-        await this.vault.modify(file, content);
+        await mutateFileAtomic(this.vault, path, (content) => {
+          const parts: string[] = [shardHeader(day)];
+          for (const block of parseBlocks(content, LEDGER_MARKER)) {
+            if (!validateReceipt(block.header).ok) continue; // malformed drops, as before
+            const r = block.header as unknown as AuditReceiptV1;
+            if (Date.parse(r.recorded) >= cutoff) parts.push(renderBlock(r));
+            else dropped++;
+          }
+          return parts.join("");
+        });
       }
     }
     return dropped;

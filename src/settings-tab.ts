@@ -9,6 +9,7 @@
 import { App, PluginSettingTab, Setting, setIcon } from "obsidian";
 import type { SettingDefinitionItem } from "obsidian";
 import type CurtisAuditPlugin from "./main";
+import { AuditSettings, sanitizeSettings } from "./settings";
 import { CURTIS_MARK_ICON_ID } from "./icon";
 import { NMOJI_DATA_URI } from "./nmoji";
 
@@ -134,6 +135,15 @@ export class AuditSettingTab extends PluginSettingTab {
     const settings = this.plugin.settings as unknown as Record<string, unknown>;
     if (!(key in settings)) return;
     settings[key] = value;
+    // Single sanitize choke point: the raw control value is cleaned before
+    // the reload persists it to data.json. The sanitized result is copied
+    // back onto the same object — components hold this reference, so it must
+    // not be swapped out from under them. setControlValue is the commit
+    // boundary (not per keystroke), so clamped values only land after commit.
+    const sanitized = sanitizeSettings(this.plugin.settings);
+    for (const k of Object.keys(sanitized) as (keyof AuditSettings)[]) {
+      settings[k] = sanitized[k];
+    }
     return this.plugin.saveAndReload();
   }
 }

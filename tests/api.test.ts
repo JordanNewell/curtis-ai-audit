@@ -1,14 +1,14 @@
 import { describe, expect, it } from "vitest";
 import { Vault } from "obsidian";
 import { AuditLedger } from "../src/ledger";
-import { AuditIngestor } from "../src/ingest";
+import { AuditIngestor, IngestResult } from "../src/ingest";
 import { CurtisAuditApiV1, createApi } from "../src/api";
 import { recordPruneReceipt } from "../src/selfaudit";
 import { sanitizeSettings, DEFAULT_SETTINGS } from "../src/settings";
 import { encodeBlock } from "../src/protocol";
 import { FakeVault, fakeFileManager } from "./fake-vault";
 
-function makeApi(vault: FakeVault, cursors: Record<string, never> = {}) {
+function makeApi(vault: FakeVault, cursors: Record<string, never> = {}, onPoll?: (r: IngestResult) => void) {
   const ledger = new AuditLedger(vault as unknown as Vault, fakeFileManager(vault), "Audit");
   const ingestor = new AuditIngestor(vault as unknown as Vault, ledger, {
     messengerRoot: "Messenger",
@@ -18,6 +18,7 @@ function makeApi(vault: FakeVault, cursors: Record<string, never> = {}) {
   const seen: string[] = [];
   const api = createApi(ledger, ingestor, {
     onReceipt: (r) => seen.push(r.id),
+    onPoll,
   });
   return { ledger, ingestor, api: api as CurtisAuditApiV1, seen };
 }
@@ -71,6 +72,33 @@ describe("api.poll", () => {
     const { api } = makeApi(vault);
     const result = await api.poll();
     expect(result.receipts).toBe(1);
+  });
+
+  it("persists the cursor through the onPoll hook when a poll advances it", async () => {
+    const vault = new FakeVault();
+    vault.files.set(
+      "Messenger/audit/inbox.md",
+      "# Inbox — audit\n\n" +
+        encodeBlock(
+          "messenger",
+          { id: "msg_1", from: "curtis-ai-chat", to: "audit", ts: "2026-10-10T00:00:00.000Z", replyTo: null },
+          '{"action":"inference"}'
+        )
+    );
+    const persisted: IngestResult[] = [];
+    const { api } = makeApi(vault, {}, (r) => persisted.push(r));
+    await api.poll();
+    // an external consumer's poll must persist too — the plugin's pump only
+    // runs on its own cadence, and an unpersisted cursor re-delivers on restart
+    expect(persisted).toHaveLength(1);
+    expect(persisted[0].receipts).toBe(1);
+  });
+
+  it("does not call the persist hook when the cursor did not move", async () => {
+    const persisted: IngestResult[] = [];
+    const { api } = makeApi(new FakeVault(), {}, (r) => persisted.push(r));
+    await api.poll(); // no inbox at all
+    expect(persisted).toHaveLength(0);
   });
 });
 

@@ -112,6 +112,9 @@ export default class CurtisAuditPlugin extends Plugin {
     this.ingestor.setCursors(this.settings.cursors);
     this.api = createApi(this.ledger, this.ingestor, {
       onReceipt: (receipt) => this.app.workspace.trigger("curtis-audit:receipt", receipt),
+      // external consumers (console, other plugins) persist the cursor too,
+      // not just the pump — an unpersisted cursor re-delivers on restart
+      onPoll: () => this.persistCursors(),
     });
     window.curtisAudit = this.api;
   }
@@ -119,6 +122,9 @@ export default class CurtisAuditPlugin extends Plugin {
   /** Settings changes can move the ledger root; rebuild components, keep cursors. */
   async saveAndReload(): Promise<void> {
     const cursors = this.ingestor.getCursors();
+    // sanitize before the write so drift from a hand-edited data.json cannot
+    // persist (idempotent alongside the settings-tab commit-boundary sanitize)
+    this.settings = sanitizeSettings(this.settings);
     await this.saveSettings();
     this.buildComponents();
     this.ingestor.setCursors(cursors);
@@ -159,15 +165,15 @@ export default class CurtisAuditPlugin extends Plugin {
   private async pump(): Promise<void> {
     try {
       if (!this.settings.messengerRoot) return;
-      const result = await this.ingestor.poll();
-      if (result.delivered > 0) {
-        await this.persistCursors();
-        if (this.settings.debug) {
-          new Notice(
-            `Audit: ${result.receipts} receipt(s), ${result.rejected} rejected, ` +
-              `${result.duplicates} duplicate(s)`
-          );
-        }
+      // api.poll persists the cursor through the onPoll hook whenever it
+      // moved — including when an external consumer already did the work
+      // and this pass delivers 0
+      const result = await this.api.poll();
+      if (result.delivered > 0 && this.settings.debug) {
+        new Notice(
+          `Audit: ${result.receipts} receipt(s), ${result.rejected} rejected, ` +
+            `${result.duplicates} duplicate(s)`
+        );
       }
       if (this.settings.retentionDays > 0 && Date.now() - this.lastPrune > PRUNE_EVERY_MS) {
         this.lastPrune = Date.now();
@@ -185,7 +191,7 @@ export default class CurtisAuditPlugin extends Plugin {
 
   private async checkNow(): Promise<void> {
     if (!this.settings.messengerRoot) {
-      new Notice("Audit inbox is off (clear Messenger root in settings re-enables it)");
+      new Notice("Audit inbox is off (set Messenger root in settings to re-enable it)");
       return;
     }
     const result = await this.ingestor.poll();
@@ -246,13 +252,19 @@ export default class CurtisAuditPlugin extends Plugin {
   /**
    * Retention pass. A nonzero drop is journaled as an ordinary `prune`
    * receipt, so the sequence gaps verify reports on are explained by the
-   * ledger itself (SPEC §7) rather than only by a console line.
+   * ledger itself (SPEC §7) rather than only by a console line. The receipt
+   * precedes the destructive pass: pruning first and failing to journal it
+   * would leave the gaps unexplained in-ledger. The count is a preview, so a
+   * receipt that lands between count and prune is undercounted by at most
+   * that append; the receipt's own seq is claimed before any shard rewrite
+   * and survives it (its `recorded` is always inside the retention window).
    */
   private async runPrune(): Promise<number> {
     const days = this.settings.retentionDays;
     if (days <= 0) return 0;
-    const dropped = await this.ledger.prune(days);
+    const dropped = await this.ledger.countPrunable(days);
     if (dropped > 0) await recordPruneReceipt(this.api, dropped, days);
+    await this.ledger.prune(days);
     return dropped;
   }
 
@@ -313,6 +325,13 @@ export default class CurtisAuditPlugin extends Plugin {
         }
         await adapter.write(normalized, content);
       },
+      deleteText: async (p) => {
+        try {
+          await adapter.remove(normalizePath(p));
+        } catch {
+          // already gone — uninstall idempotence
+        }
+      },
     };
   }
 
@@ -357,7 +376,11 @@ export default class CurtisAuditPlugin extends Plugin {
     const parts: string[] = [];
     const installed = summary(["added", "updated", "removed"]);
     if (installed) parts.push(`${verb}ed: ${installed}`);
-    if (results.some((r) => r.action === "already-installed")) parts.push("nothing to change");
+    if (
+      results.some((r) => r.action === "already-installed" || r.action === "not-installed")
+    ) {
+      parts.push("nothing to change");
+    }
     const manual = results.filter((r) => r.action === "manual");
     if (manual.length) parts.push(`manual: ${manual.map((r) => r.target).join(", ")}`);
     const aborted = results.filter((r) => r.action === "aborted");

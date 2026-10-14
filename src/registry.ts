@@ -51,9 +51,16 @@ export async function writeFile(vault: Vault, path: string, content: string): Pr
   }
   try {
     await vault.create(normalized, content);
-  } catch {
+  } catch (err) {
+    // create can lose a race: another writer made the file between our
+    // exists-check and create — write to it. Anything else is a real failure;
+    // dropping the write silently would lose ledger/state updates.
     const existing = vault.getAbstractFileByPath(normalized);
-    if (existing instanceof TFile) await vault.modify(existing, content);
+    if (existing instanceof TFile) {
+      await vault.modify(existing, content);
+      return;
+    }
+    throw err;
   }
 }
 
@@ -82,6 +89,17 @@ export function inboxHeader(address: string): string {
   );
 }
 
+/** The literal header row cells written above every registry table. */
+const HEADER_CELLS = ["address", "name", "updated"];
+
+/**
+ * Splits a table row on unescaped pipes only and unescapes each cell, so
+ * values containing `\|` survive a write/read round trip.
+ */
+function splitRow(row: string): string[] {
+  return row.split(/(?<!\\)\|/).map((c) => c.trim().replace(/\\\|/g, "|"));
+}
+
 /**
  * Merge one entry into `<root>/registry.md`, byte-compatible with
  * obsidian-messenger's registry table (advisory directory, rewritten not
@@ -96,11 +114,18 @@ export async function upsertRegistryEntry(
     throw new Error(`Invalid messenger address: ${entry.address}`);
   }
   const registryPath = normalizePath(`${root}/registry.md`);
-  const entries = await readRegistry(vault, root);
+  // Self-heal: drop phantom header rows and other junk an older build may
+  // have persisted as data (the literal "address" passes ADDRESS_RE, and any
+  // entry failing the regex has no business in the table).
+  const entries = (await readRegistry(vault, root)).filter(
+    (e) => e.address !== "address" && ADDRESS_RE.test(e.address)
+  );
   const next = [entry, ...entries.filter((e) => e.address !== entry.address)].sort((a, b) =>
     a.address.localeCompare(b.address)
   );
-  const escape = (s: string): string => s.replace(/\|/g, "\\|");
+  // escape pipes that are not already escaped — rewriting an entry that came
+  // off disk must not double-escape it
+  const escape = (s: string): string => s.replace(/(?<!\\)\|/g, "\\|");
   const table =
     "| address | name | updated |\n| --- | --- | --- |\n" +
     next
@@ -122,18 +147,18 @@ export async function readRegistry(vault: Vault, root: string): Promise<Registry
   for (const line of content.split("\n")) {
     const trimmed = line.trim();
     if (!trimmed.startsWith("|")) continue;
-    const cells = trimmed.split("|").map((c) => c.trim());
+    const cells = splitRow(trimmed);
     // rows look like: | address | name | updated | → ["", address, name, updated, ""]
     if (cells.length < 5) continue;
     const address = cells[1];
     const name = cells[2];
     const updated = cells[3];
+    // the header row itself (and its old phantom persistence) is not data
+    if (address === HEADER_CELLS[0] && name === HEADER_CELLS[1] && updated === HEADER_CELLS[2]) {
+      continue;
+    }
     if (!address || address === "---" || !ADDRESS_RE.test(address)) continue;
-    entries.push({
-      address,
-      name: (name || address).replace(/\\\|/g, "|"),
-      updated: updated.replace(/\\\|/g, "|"),
-    });
+    entries.push({ address, name: name || address, updated });
   }
   return entries;
 }

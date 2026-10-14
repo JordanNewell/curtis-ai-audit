@@ -75,7 +75,7 @@ describe("writeFile", () => {
     expect(vault.readRaw("Audit/state.json")).toBe("mine");
   });
 
-  it("silently drops the write when a folder occupies the target path (documented bug)", async () => {
+  it("throws when a folder occupies the target path instead of dropping the write", async () => {
     // real Obsidian refuses vault.create where a folder lives; the base fake
     // only checks its file map, so model the refusal here
     const vault = new (class extends FakeVault {
@@ -86,10 +86,11 @@ describe("writeFile", () => {
         await super.create(path, data);
       }
     })({ "Audit/state.json/nested.txt": "x" });
-    await writeFile(asVault(vault), "Audit/state.json", "lost");
-    // create() throws, the catch re-checks and finds a TFolder (not a TFile),
-    // so the write is dropped without an error — KNOWN BUG in src/registry.ts
-    expect(vault.files.has("Audit/state.json")).toBe(false);
+    // the catch re-checks and finds a TFolder (not a TFile) — a real failure
+    // must surface, not vanish
+    await expect(writeFile(asVault(vault), "Audit/state.json", "lost")).rejects.toThrow(
+      /Folder in the way/
+    );
   });
 });
 
@@ -147,7 +148,7 @@ describe("upsertRegistryEntry / readRegistry", () => {
     expect(content.indexOf("| a-agent")).toBeLessThan(content.indexOf("| z-agent"));
   });
 
-  it("replaces an existing address instead of duplicating it (but grows phantom header rows)", async () => {
+  it("replaces an existing address without compounding phantom header rows", async () => {
     const vault = new FakeVault();
     const entry = { address: "audit", name: "old name", updated: "t1" };
     await upsertRegistryEntry(asVault(vault), "Messenger", entry);
@@ -157,30 +158,51 @@ describe("upsertRegistryEntry / readRegistry", () => {
       updated: "t2",
     });
     const entries = await readRegistry(asVault(vault), "Messenger");
-    // KNOWN BUG (src/registry.ts readRegistry): the table header row parses as
-    // a valid entry ("address" passes ADDRESS_RE), and each rewrite persists
-    // that phantom back as a data row, so it compounds on every upsert.
-    expect(entries.filter((e) => e.address === "address")).toHaveLength(2);
+    // the header row parses as a valid entry ("address" passes ADDRESS_RE) in
+    // older builds and compounded on every upsert; it is now skipped on read
+    // and dropped on rewrite
+    expect(entries.filter((e) => e.address === "address")).toHaveLength(0);
     // the real entry itself is replaced, not duplicated
     const audit = entries.filter((e) => e.address === "audit");
     expect(audit).toHaveLength(1);
     expect(audit[0]).toMatchObject({ address: "audit", name: "new name", updated: "t2" });
   });
 
-  it("writes escaped pipes but mangles them on read (documented bug)", async () => {
+  it("round-trips escaped pipes through upsert and read", async () => {
     const vault = new FakeVault();
     await upsertRegistryEntry(asVault(vault), "Messenger", {
       address: "audit",
       name: "audit | inbox",
       updated: "a|b",
     });
+    // the row is written with `\|` and read back by splitting on unescaped
+    // pipes only, so both cells survive intact
+    expect(vault.readRaw("Messenger/registry.md")).toContain("| audit | audit \\| inbox | a\\|b |");
     const entries = await readRegistry(asVault(vault), "Messenger");
-    // the row `| audit | audit \| inbox | a \| b |` is split on every "|", so
-    // the name truncates at the escape backslash and the updated cell steals
-    // the first pipe-separated fragment
     const audit = entries.find((e) => e.address === "audit");
-    expect(audit?.name).toBe("audit \\");
-    expect(audit?.updated).toBe("inbox");
+    expect(audit?.name).toBe("audit | inbox");
+    expect(audit?.updated).toBe("a|b");
+  });
+
+  it("does not double-escape an already-escaped pipe on rewrite", async () => {
+    const vault = new FakeVault();
+    await upsertRegistryEntry(asVault(vault), "Messenger", {
+      address: "audit",
+      name: "audit | inbox",
+      updated: "t1",
+    });
+    // second upsert re-reads the escaped value and rewrites it — `\|` must
+    // stay `\|`, never become `\\|`
+    await upsertRegistryEntry(asVault(vault), "Messenger", {
+      address: "audit",
+      name: "audit | inbox",
+      updated: "t2",
+    });
+    const content = vault.readRaw("Messenger/registry.md") ?? "";
+    expect(content).toContain("audit \\| inbox");
+    expect(content).not.toContain("\\\\|");
+    const entries = await readRegistry(asVault(vault), "Messenger");
+    expect(entries.find((e) => e.address === "audit")?.name).toBe("audit | inbox");
   });
 
   it("rejects an invalid address", async () => {
@@ -199,7 +221,7 @@ describe("upsertRegistryEntry / readRegistry", () => {
     expect(entries).toEqual([]);
   });
 
-  it("parses the header row as a data row (documented bug) but skips separators and invalid addresses", async () => {
+  it("skips the header row, separators, and invalid addresses", async () => {
     const vault = new FakeVault({
       "Messenger/registry.md":
         "# Messenger registry\n\n" +
@@ -210,12 +232,33 @@ describe("upsertRegistryEntry / readRegistry", () => {
         "not a table row\n",
     });
     const entries = await readRegistry(asVault(vault), "Messenger");
-    // KNOWN BUG: the header row is returned as an entry because the literal
-    // cell "address" satisfies ADDRESS_RE; only the separator and the invalid
-    // address are filtered
-    expect(entries.map((e) => e.address)).toEqual(["address", "audit"]);
-    expect(entries[0]).toMatchObject({ address: "address", name: "name", updated: "updated" });
-    expect(entries[1]).toMatchObject({ address: "audit", name: "Audit", updated: "t1" });
+    // the header row ("address" satisfies ADDRESS_RE) is recognized and
+    // skipped; only the real entry survives
+    expect(entries.map((e) => e.address)).toEqual(["audit"]);
+    expect(entries[0]).toMatchObject({ address: "audit", name: "Audit", updated: "t1" });
+  });
+
+  it("self-heals: upsert drops pre-existing phantom header rows and invalid addresses", async () => {
+    const vault = new FakeVault({
+      "Messenger/registry.md":
+        "# Messenger registry\n\n" +
+        "| address | name | updated |\n" +
+        "| --- | --- | --- |\n" +
+        // a phantom row an older build persisted as data (identical to the header)
+        "| address | name | updated |\n" +
+        "| BAD! | broken | t2 |\n" +
+        "| audit | Audit | t1 |\n",
+    });
+    await upsertRegistryEntry(asVault(vault), "Messenger", {
+      address: "b-agent",
+      name: "Bee",
+      updated: "t3",
+    });
+    const content = vault.readRaw("Messenger/registry.md") ?? "";
+    // only the genuine header line mentions the literal "address" cell
+    expect(content.match(/\| address \|/g)).toHaveLength(1);
+    const entries = await readRegistry(asVault(vault), "Messenger");
+    expect(entries.map((e) => e.address)).toEqual(["audit", "b-agent"]);
   });
 
   it("falls back to the address as the name when the name cell is empty", async () => {

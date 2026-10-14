@@ -83,6 +83,9 @@ export class AuditIngestor {
 
   private async ingestMessage(message: MailEnvelope): Promise<IngestOutcome> {
     if (this.seenSourceIds.has(message.id)) return "duplicate";
+    // an unparseable envelope ts would poison the cursor fallback if stored —
+    // reject it here so it is counted and the cursor advances past it
+    if (Number.isNaN(Date.parse(message.ts))) return "rejected";
     const body = message.body.trim();
     if (!body.startsWith("{")) return "rejected";
     let payload: unknown;
@@ -118,9 +121,21 @@ export class AuditIngestor {
 }
 
 function pendingAfter(messages: MailEnvelope[], cursor: Cursor | null): MailEnvelope[] {
-  if (!cursor) return messages;
+  // a corrupt cursor (garbage written by an older version, or a hand-edited
+  // settings file) must not NaN-compare the whole inbox into a permanent
+  // stall — ignore it and start over; the sourceId dedupe absorbs redelivery
+  if (!cursor || typeof cursor.id !== "string" || typeof cursor.ts !== "string") {
+    return messages;
+  }
   const idx = messages.findIndex((m) => m.id === cursor.id);
   if (idx >= 0) return messages.slice(idx + 1);
   const ts = Date.parse(cursor.ts);
-  return messages.filter((m) => Date.parse(m.ts) > ts);
+  if (Number.isNaN(ts)) return messages;
+  return messages.filter((m) => {
+    // unparseable message ts stays pending so ingestMessage rejects and
+    // counts it; the boundary is inclusive (>=) — an equal-ts redelivery is
+    // caught by the sourceId dedupe instead of being skipped forever
+    const t = Date.parse(m.ts);
+    return Number.isNaN(t) ? true : t >= ts;
+  });
 }

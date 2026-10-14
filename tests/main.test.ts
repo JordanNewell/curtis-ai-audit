@@ -139,6 +139,18 @@ describe("cursors survive a settings reload", () => {
     expect(vault.folders.has("AuditTwo/ledger")).toBe(true);
     plugin.onunload();
   });
+
+  it("saveAndReload sanitizes settings before persisting", async () => {
+    const { plugin, saved } = makePlugin(new FakeVault());
+    await plugin.onload();
+    // drift that could arrive through a hand-edited data.json
+    Object.assign(plugin.settings, { pollSeconds: 0.5, retentionDays: -3 });
+    await plugin.saveAndReload();
+    const persisted = saved[saved.length - 1] as AuditSettings;
+    expect(persisted.pollSeconds).toBeGreaterThanOrEqual(1);
+    expect(persisted.retentionDays).toBe(0);
+    plugin.onunload();
+  });
 });
 
 describe("checkNow / pump", () => {
@@ -206,6 +218,38 @@ describe("checkNow / pump", () => {
     err.mockRestore();
     plugin.onunload();
   });
+
+  it("pump persists cursors whenever they changed, even when its own poll delivered 0", async () => {
+    // an external api.poll() consumed the inbox and moved the in-memory
+    // cursor; the pump's later poll delivers 0 but the cursor still changed
+    const vault = new FakeVault();
+    vault.files.set(
+      "Messenger/audit/inbox.md",
+      "# Inbox — audit\n\n" +
+        encodeBlock(
+          "messenger",
+          { id: "msg_1", from: "curtis-ai-chat", to: "audit", ts: "2026-10-10T00:00:00.000Z", replyTo: null },
+          '{"action":"inference"}'
+        )
+    );
+    const { plugin, saved } = makePlugin(vault);
+    await plugin.onload();
+
+    await plugin.api.poll(); // external consumer; its hook persists
+    await (plugin as unknown as { pump(): Promise<void> }).pump(); // delivers 0
+    const persisted = saved[saved.length - 1] as AuditSettings;
+    expect(persisted.cursors["Messenger/audit/inbox.md"].id).toBe("msg_1");
+    plugin.onunload();
+  });
+
+  it("pump skips the settings write when the cursor did not move", async () => {
+    const { plugin, saved } = makePlugin(new FakeVault());
+    await plugin.onload();
+    plugin.settings.messengerRoot = "Messenger";
+    await (plugin as unknown as { pump(): Promise<void> }).pump();
+    expect(saved).toHaveLength(0);
+    plugin.onunload();
+  });
 });
 
 describe("retention pump", () => {
@@ -228,6 +272,30 @@ describe("retention pump", () => {
     expect(remaining[0].agent).toBe("curtis-ai-audit");
     expect(remaining[0].action).toBe("prune");
     expect(remaining[0].detail).toEqual({ dropped: 2, retentionDays: 7 });
+    plugin.onunload();
+  });
+
+  it("records the prune receipt before the destructive pass (SPEC §7)", async () => {
+    // if the receipt write failed after the shards were already pruned, the
+    // seq gaps would be unexplained in-ledger
+    const vault = new FakeVault();
+    const oldDay = new Date(Date.now() - 30 * 86400000).toISOString().slice(0, 10);
+    vault.files.set(
+      `Audit/ledger/${oldDay}.md`,
+      `# Audit ledger — ${oldDay}\n\n` + seedReceipt(oldDay, 0, 1) + seedReceipt(oldDay, 1, 2)
+    );
+    const { plugin } = makePlugin(vault);
+    await plugin.onload();
+    plugin.settings.retentionDays = 7;
+
+    vi.spyOn(plugin.api, "record").mockRejectedValue(new Error("receipt write failed"));
+    const runPrune = (plugin as unknown as { runPrune(): Promise<number> }).runPrune.bind(plugin);
+    await expect(runPrune()).rejects.toThrow("receipt write failed");
+
+    // the destructive step never ran: the old receipts are still there
+    const remaining = await plugin.ledger.readAll();
+    expect(remaining).toHaveLength(2);
+    expect(remaining.every((r) => r.agent === "curtis-ai-chat")).toBe(true);
     plugin.onunload();
   });
 
@@ -310,6 +378,24 @@ describe("hook paths and notices", () => {
     expect(vault.readRaw("deep/nested/out.txt")).toBe("written");
   });
 
+  it("hookIo deletes through the adapter, tolerating missing files", async () => {
+    const vault = new FakeVault({ "gone-soon.txt": "bye" });
+    const { plugin } = makePlugin(vault);
+    (vault as unknown as { adapter: unknown }).adapter = {
+      remove: async (p: string) => {
+        if (!vault.files.delete(p)) throw new Error("not found");
+      },
+    };
+    const io = (plugin as unknown as { hookIo(): unknown }).hookIo() as {
+      deleteText?(p: string): Promise<void>;
+    };
+    expect(typeof io.deleteText).toBe("function");
+    await io.deleteText!("gone-soon.txt");
+    expect(vault.readRaw("gone-soon.txt")).toBeUndefined();
+    // deleting a missing file is fine (uninstall idempotence)
+    await io.deleteText!("never-was-there.txt");
+  });
+
   it("hookNotice summarizes install results", () => {
     const { plugin } = makePlugin(new FakeVault());
     const results: HookTargetResult[] = [
@@ -341,5 +427,9 @@ describe("hook paths and notices", () => {
         { target: "opencode", action: "aborted", detail: "not ours" },
       ])
     ).toBe("Audit hooks — uninstalled: claude-code · skipped: opencode");
+    // uninstall reports hooks that were never installed the same way
+    expect(hookNotice("uninstall", [{ target: "codex", action: "not-installed" }])).toBe(
+      "Audit hooks — nothing to change"
+    );
   });
 });

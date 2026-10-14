@@ -176,6 +176,13 @@ describe("validateReceipt (edges)", () => {
     expect(validateReceipt({ ...receipt, seq: -1 }).ok).toBe(false);
   });
 
+  it("rejects an out-of-range seq beyond the safe integer range", () => {
+    const receipt = buildReceipt(validPayload, { agent: "curtis-ai-chat" });
+    expect(validateReceipt({ ...receipt, seq: Number.MAX_SAFE_INTEGER }).ok).toBe(true);
+    expect(validateReceipt({ ...receipt, seq: Number.MAX_SAFE_INTEGER + 1 }).ok).toBe(false);
+    expect(validateReceipt({ ...receipt, seq: 1e21 }).ok).toBe(false);
+  });
+
   it("rejects a missing or unparsable recorded stamp", () => {
     const receipt = buildReceipt(validPayload, { agent: "curtis-ai-chat" });
     expect(validateReceipt({ ...receipt, recorded: "nope" }).ok).toBe(false);

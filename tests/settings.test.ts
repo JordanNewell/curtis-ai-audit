@@ -9,20 +9,24 @@ describe("sanitizeSettings", () => {
   });
 
   it("normalizes slashes in paths and trims the ends", () => {
-    // NOTE (current behavior): trailing slashes are stripped before trim(), so
-    // trailing whitespace protects a trailing slash from being removed
-    expect(sanitizeSettings({ root: "  Audit//ledger\\\\ " }).root).toBe("Audit/ledger/");
+    // trim() runs first, so trailing whitespace cannot protect a trailing
+    // separator from being stripped
+    expect(sanitizeSettings({ root: "  Audit//ledger\\\\ " }).root).toBe("Audit/ledger");
     expect(sanitizeSettings({ messengerRoot: "C:\\\\Notes\\\\Bus" }).messengerRoot).toBe(
       "C:/Notes/Bus"
     );
     expect(sanitizeSettings({ root: "/leading/and/trailing/" }).root).toBe("leading/and/trailing");
-    expect(sanitizeSettings({ root: "  Audit//ledger\\\\  " }).root).toBe("Audit/ledger/");
+    expect(sanitizeSettings({ root: "  Audit//ledger\\\\  " }).root).toBe("Audit/ledger");
+    expect(sanitizeSettings({ messengerRoot: "Audit/ledger/ " }).messengerRoot).toBe("Audit/ledger");
   });
 
   it("falls back to the default path when cleaning leaves nothing", () => {
     expect(sanitizeSettings({ root: "///" }).root).toBe(DEFAULT_SETTINGS.root);
     expect(sanitizeSettings({ root: "\\\\" }).root).toBe(DEFAULT_SETTINGS.root);
+    expect(sanitizeSettings({ root: "   " }).root).toBe(DEFAULT_SETTINGS.root);
     expect(sanitizeSettings({ root: 42 as never }).root).toBe(DEFAULT_SETTINGS.root);
+    // messengerRoot differs: cleaning to nothing yields "" (bus off), not the default
+    expect(sanitizeSettings({ messengerRoot: "  " }).messengerRoot).toBe("");
   });
 
   it("keeps a valid inbox address and rejects an invalid one", () => {
@@ -34,10 +38,14 @@ describe("sanitizeSettings", () => {
     expect(sanitizeSettings({ inboxAddress: 7 as never }).inboxAddress).toBe("audit");
   });
 
-  it("clamps pollSeconds into [1, 3600] and defaults garbage", () => {
+  it("floors fractional pollSeconds like retentionDays (0.5 lands on the clamp floor of 1, 0 still takes the default)", () => {
+    // chosen behavior: fractional input floors (consistent with retentionDays),
+    // so 0.5 → floor 0 → clamps up to the minimum of 1 rather than falling
+    // back to the default; only falsy input takes the default
     expect(sanitizeSettings({ pollSeconds: 0 }).pollSeconds).toBe(DEFAULT_SETTINGS.pollSeconds);
-    // 0.5 is truthy so it skips the fallback, then floor(0.5)=0 clamps up to 1
     expect(sanitizeSettings({ pollSeconds: 0.5 }).pollSeconds).toBe(1);
+    expect(sanitizeSettings({ pollSeconds: 1.9 }).pollSeconds).toBe(1);
+    expect(sanitizeSettings({ pollSeconds: 59.9 }).pollSeconds).toBe(59);
     expect(sanitizeSettings({ pollSeconds: -100 }).pollSeconds).toBe(1);
     expect(sanitizeSettings({ pollSeconds: 99999 }).pollSeconds).toBe(3600);
     expect(sanitizeSettings({ pollSeconds: "45" as never }).pollSeconds).toBe(45);

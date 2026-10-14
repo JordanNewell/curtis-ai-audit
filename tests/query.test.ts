@@ -74,6 +74,26 @@ describe("queryReceipts", () => {
     ]);
   });
 
+  it("matches the subject exactly with exactPath", () => {
+    const receipts = [
+      makeReceipt({ subject: "Notes" }),
+      makeReceipt({ subject: "Notes/deep/a.md" }),
+      makeReceipt({ subject: "Notes2/b.md" }),
+      makeReceipt({}),
+    ];
+    // default stays prefix; exactPath opts into equality
+    expect(queryReceipts(receipts, { subject: "Notes", exactPath: true }).map((r) => r.subject)).toEqual([
+      "Notes",
+    ]);
+    expect(queryReceipts(receipts, { subject: "Notes/deep/a.md", exactPath: true }).map((r) => r.subject)).toEqual([
+      "Notes/deep/a.md",
+    ]);
+    // receipts without a subject never match an exactPath query
+    expect(queryReceipts(receipts, { subject: "", exactPath: true })).toEqual([]);
+    // the default prefix mode is untouched by the flag's absence
+    expect(queryReceipts(receipts, { subject: "Notes" })).toHaveLength(3);
+  });
+
   it("applies inclusive since/until bounds on recorded", () => {
     const receipts = [at(30), at(20), at(10)];
     const since = new Date(T0 - 20 * 60000).toISOString();

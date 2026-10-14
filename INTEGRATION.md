@@ -63,7 +63,7 @@ append_receipt() {
   id="msg_$(date +%s | tr -d '\n')$$"
   ts="$(date -u +%Y-%m-%dT%H:%M:%S.000Z)"
   printf '<!-- messenger: {"id":"%s","from":"%s","to":"%s","ts":"%s","replyTo":null} -->\n%s\n<!-- /messenger -->\n\n' \
-    "$id" "$from" "$to" "$ts" "$body" >> "~/vault/Messenger/audit/inbox.md"
+    "$id" "$from" "$to" "$ts" "$body" >> ~/vault/Messenger/audit/inbox.md
 }
 append_receipt audit research-agent '{"action":"inference","summary":"Nightly digest run"}'
 ```
@@ -120,7 +120,9 @@ plaintext vault. The `detail` field exists for the cases where you do.
   subject prefix, bounds on `recorded`, `order` + `limit`.
 - `Verify ledger` — catches malformed blocks, duplicates, reordering, and
   deletions (sequence gaps), honestly scoped: it detects the casual cases,
-  it does not defeat a determined editor (SPEC §6).
+  it does not defeat a determined editor (SPEC §6). If it reports duplicate
+  `(agent, seq)` and you sync your vault across devices, the usual cause is
+  the vault being open in Obsidian on two machines at once — see SPEC §5.
 - `Audit/digest.md` — counts, statuses, tokens, durations, a per-day
   breakdown, recent errors.
 - `curtis-audit:receipt` workspace event after every written receipt.

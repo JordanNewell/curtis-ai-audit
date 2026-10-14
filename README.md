@@ -20,7 +20,9 @@ plugin is *not* required — the audit inbox is just a file.
   model, duration, tokens, status, plus a rendered human summary.
 - **Per-day ledger** — append-only shards under `Audit/ledger/YYYY-MM-DD.md`.
   Envelope = the receipt as canonical JSON; body = the summary. Readable in
-  Obsidian, parseable by anything.
+  Obsidian, parseable by anything. All day boundaries are UTC — a 9pm ET
+  action lands in tomorrow's shard, and `Open today's ledger` means
+  UTC-today (SPEC §2).
 - **Ingest** — polls the OM-1 audit inbox (`Messenger/audit/inbox.md`) with
   proper cursor semantics; junk is rejected, redeliveries are deduped.
 - **Agent hooks** — `Install agent audit hooks` writes vault-scoped configs
@@ -35,7 +37,8 @@ plugin is *not* required — the audit inbox is just a file.
   since, ... })` for status bars, dashboards, and other plugins.
 - **Verify** — detects malformed blocks, duplicate ids/sequences, reordered
   shards, and per-agent sequence gaps (deletions leave holes; no crypto, no
-  false promises).
+  false promises). One writer per vault: a vault open on two synced devices
+  at once produces duplicate-sequence errors without any corruption (SPEC §5).
 - **Digest** — a rolling `Audit/digest.md`: counts, statuses, tokens,
   durations, a per-day breakdown, errors.
 - **Retention off by default** — an audit trail that silently ages out is a
@@ -110,13 +113,13 @@ See [INTEGRATION.md](./INTEGRATION.md) for wiring up `curtis-ai-chat`.
 ## Testing
 
 ```
-npm test        # 107 unit tests, in-memory vault, no Obsidian needed
+npm test        # unit tests, in-memory vault, no Obsidian needed
 npm run build   # typecheck + bundle to main.js
 ```
 
 ## Status
 
-v0.2.2 — the local-first tier, deliberately. Tamper-evidence, retention
+v0.2.4 — the local-first tier, deliberately. Tamper-evidence, retention
 enforcement, and reporting are the next tier up and are not pretended here.
 Requires Obsidian 1.13.0+ (declarative settings).
 

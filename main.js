@@ -165,9 +165,13 @@ async function writeFile(vault, path, content) {
   }
   try {
     await vault.create(normalized, content);
-  } catch (e) {
+  } catch (err) {
     const existing = vault.getAbstractFileByPath(normalized);
-    if (existing instanceof import_obsidian.TFile) await vault.modify(existing, content);
+    if (existing instanceof import_obsidian.TFile) {
+      await vault.modify(existing, content);
+      return;
+    }
+    throw err;
   }
 }
 async function mutateFileAtomic(vault, path, mutate) {
@@ -187,16 +191,22 @@ Append-only, oldest at top. Do not reorder or edit delivered blocks. See SPEC.md
 
 `;
 }
+var HEADER_CELLS = ["address", "name", "updated"];
+function splitRow(row) {
+  return row.split(/(?<!\\)\|/).map((c) => c.trim().replace(/\\\|/g, "|"));
+}
 async function upsertRegistryEntry(vault, root, entry) {
   if (!ADDRESS_RE.test(entry.address)) {
     throw new Error(`Invalid messenger address: ${entry.address}`);
   }
   const registryPath = (0, import_obsidian.normalizePath)(`${root}/registry.md`);
-  const entries = await readRegistry(vault, root);
+  const entries = (await readRegistry(vault, root)).filter(
+    (e) => e.address !== "address" && ADDRESS_RE.test(e.address)
+  );
   const next = [entry, ...entries.filter((e) => e.address !== entry.address)].sort(
     (a, b) => a.address.localeCompare(b.address)
   );
-  const escape = (s) => s.replace(/\|/g, "\\|");
+  const escape = (s) => s.replace(/(?<!\\)\|/g, "\\|");
   const table = "| address | name | updated |\n| --- | --- | --- |\n" + next.map((e) => `| ${escape(e.address)} | ${escape(e.name)} | ${escape(e.updated)} |`).join("\n") + "\n";
   const content = `# Messenger registry
 
@@ -214,17 +224,16 @@ async function readRegistry(vault, root) {
   for (const line of content.split("\n")) {
     const trimmed = line.trim();
     if (!trimmed.startsWith("|")) continue;
-    const cells = trimmed.split("|").map((c) => c.trim());
+    const cells = splitRow(trimmed);
     if (cells.length < 5) continue;
     const address = cells[1];
     const name = cells[2];
     const updated = cells[3];
+    if (address === HEADER_CELLS[0] && name === HEADER_CELLS[1] && updated === HEADER_CELLS[2]) {
+      continue;
+    }
     if (!address || address === "---" || !ADDRESS_RE.test(address)) continue;
-    entries.push({
-      address,
-      name: (name || address).replace(/\\\|/g, "|"),
-      updated: updated.replace(/\\\|/g, "|")
-    });
+    entries.push({ address, name: name || address, updated });
   }
   return entries;
 }
@@ -274,6 +283,7 @@ function validatePayload(payload) {
   }
   return { ok: errors.length === 0, errors };
 }
+var MAX_SEQ = Number.MAX_SAFE_INTEGER;
 function validateReceipt(value) {
   if (typeof value !== "object" || value === null || Array.isArray(value)) {
     return { ok: false, errors: ["receipt must be a JSON object"] };
@@ -282,8 +292,8 @@ function validateReceipt(value) {
   const errors = [];
   if (r.schema !== RECEIPT_SCHEMA) errors.push(`schema must be "${RECEIPT_SCHEMA}"`);
   if (typeof r.id !== "string" || !r.id) errors.push("id must be a non-empty string");
-  if (typeof r.seq !== "number" || !Number.isInteger(r.seq) || r.seq < 0) {
-    errors.push("seq must be a non-negative integer");
+  if (typeof r.seq !== "number" || !Number.isInteger(r.seq) || r.seq < 0 || r.seq > MAX_SEQ) {
+    errors.push("seq must be a non-negative integer within the safe range");
   }
   if (typeof r.agent !== "string" || !ADDRESS_RE.test(r.agent)) {
     errors.push("agent must be a valid address");
@@ -416,11 +426,13 @@ var AuditLedger = class {
     }
     try {
       await this.vault.create(path, shardHeader(day) + block);
-    } catch (e) {
+    } catch (err) {
       const existing = this.vault.getAbstractFileByPath(path);
       if (existing instanceof import_obsidian2.TFile) {
         await mutateFileAtomic(this.vault, path, (content) => content.replace(/\s+$/, "\n\n") + block);
+        return;
       }
+      throw err;
     }
   }
   async saveState() {
@@ -470,6 +482,24 @@ var AuditLedger = class {
     return all;
   }
   /**
+   * What prune(maxAgeDays) would drop — a read-only preview so callers can
+   * journal the prune receipt BEFORE the destructive pass (SPEC §7: a failed
+   * receipt write after pruning would leave the gaps unexplained).
+   */
+  async countPrunable(maxAgeDays) {
+    if (maxAgeDays <= 0) return 0;
+    const cutoff = Date.now() - maxAgeDays * 864e5;
+    let dropped = 0;
+    for (const path of this.listShards()) {
+      const file = this.vault.getAbstractFileByPath(path);
+      if (!(file instanceof import_obsidian2.TFile)) continue;
+      const read = await this.readShard(path);
+      if (read.blocks === 0) continue;
+      dropped += read.receipts.filter((r) => Date.parse(r.recorded) < cutoff).length;
+    }
+    return dropped;
+  }
+  /**
    * Drop receipts recorded before the cutoff. Unlike mail GC, retention
    * defaults to off (0 = keep everything) — an audit trail that silently
    * ages out is a policy contradiction. Pruning whole shards leaves seq
@@ -486,13 +516,21 @@ var AuditLedger = class {
       const read = await this.readShard(path);
       if (read.blocks === 0) continue;
       const kept = read.receipts.filter((r) => Date.parse(r.recorded) >= cutoff);
-      dropped += read.receipts.length - kept.length;
       if (kept.length === 0) {
+        dropped += read.receipts.length - kept.length;
         await this.fileManager.trashFile(file);
       } else if (kept.length !== read.receipts.length) {
         const day = file.name.replace(/\.md$/, "");
-        const content = shardHeader(day) + kept.map(renderBlock).join("");
-        await this.vault.modify(file, content);
+        await mutateFileAtomic(this.vault, path, (content) => {
+          const parts = [shardHeader(day)];
+          for (const block of parseBlocks(content, LEDGER_MARKER)) {
+            if (!validateReceipt(block.header).ok) continue;
+            const r = block.header;
+            if (Date.parse(r.recorded) >= cutoff) parts.push(renderBlock(r));
+            else dropped++;
+          }
+          return parts.join("");
+        });
       }
     }
     return dropped;
@@ -612,6 +650,7 @@ var AuditIngestor = class {
   async ingestMessage(message) {
     var _a;
     if (this.seenSourceIds.has(message.id)) return "duplicate";
+    if (Number.isNaN(Date.parse(message.ts))) return "rejected";
     const body = message.body.trim();
     if (!body.startsWith("{")) return "rejected";
     let payload;
@@ -645,15 +684,22 @@ var AuditIngestor = class {
   }
 };
 function pendingAfter(messages, cursor) {
-  if (!cursor) return messages;
+  if (!cursor || typeof cursor.id !== "string" || typeof cursor.ts !== "string") {
+    return messages;
+  }
   const idx = messages.findIndex((m) => m.id === cursor.id);
   if (idx >= 0) return messages.slice(idx + 1);
   const ts = Date.parse(cursor.ts);
-  return messages.filter((m) => Date.parse(m.ts) > ts);
+  if (Number.isNaN(ts)) return messages;
+  return messages.filter((m) => {
+    const t = Date.parse(m.ts);
+    return Number.isNaN(t) ? true : t >= ts;
+  });
 }
 
 // src/verify.ts
 var MAX_LISTED = 20;
+var MAX_MATERIALIZED = 1e4;
 async function verifyLedger(ledger) {
   var _a, _b;
   const issues = [];
@@ -725,16 +771,19 @@ async function verifyLedger(ledger) {
   const agentReports = [];
   const sortedAgents = Array.from(agents.entries()).sort((a, b) => a[0].localeCompare(b[0]));
   for (const [agent, a] of sortedAgents) {
+    const missingCount = a.max - a.min + 1 - a.seen.size;
     const missing = [];
-    for (let s = a.min; s <= a.max; s++) {
-      if (!a.seen.has(s)) missing.push(s);
+    if (missingCount > 0 && missingCount <= MAX_MATERIALIZED) {
+      for (let s = a.min; s <= a.max; s++) {
+        if (!a.seen.has(s)) missing.push(s);
+      }
     }
-    if (missing.length > 0) {
-      const listed = missing.slice(0, MAX_LISTED).join(", ") + (missing.length > MAX_LISTED ? ` \u2026 (+${missing.length - MAX_LISTED} more)` : "");
+    if (missingCount > 0) {
+      const listed = missing.length > 0 ? missing.slice(0, MAX_LISTED).join(", ") + (missing.length > MAX_LISTED ? ` \u2026 (+${missing.length - MAX_LISTED} more)` : "") : `${missingCount} gaps \u2014 too large to list`;
       issues.push({
         severity: "warning",
         file: "(ledger)",
-        message: `${agent}: ${missing.length} missing sequence number(s) between ${a.min} and ${a.max} [${listed}] \u2014 deleted receipts, failed writes, or shards dropped by pruning`
+        message: `${agent}: ${missingCount} missing sequence number(s) between ${a.min} and ${a.max} [${listed}] \u2014 deleted receipts, failed writes, or shards dropped by pruning`
       });
     }
     agentReports.push({ agent, count: a.count, minSeq: a.min, maxSeq: a.max, missing });
@@ -904,7 +953,10 @@ function queryReceipts(receipts, query = {}) {
     if (query.action !== void 0 && r.action !== query.action) return false;
     if (query.status !== void 0 && r.status !== query.status) return false;
     if (query.model !== void 0 && r.model !== query.model) return false;
-    if (query.subject !== void 0 && !((_a = r.subject) != null ? _a : "").startsWith(query.subject)) return false;
+    if (query.subject !== void 0) {
+      const hit = query.exactPath ? r.subject === query.subject : ((_a = r.subject) != null ? _a : "").startsWith(query.subject);
+      if (!hit) return false;
+    }
     const ms = Date.parse(r.recorded);
     return ms >= sinceMs && ms <= untilMs;
   });
@@ -938,7 +990,15 @@ function createApi(ledger, ingestor, hooks = {}) {
       (_a = hooks.onReceipt) == null ? void 0 : _a.call(hooks, receipt);
       return receipt;
     },
-    poll: () => ingestor.poll(),
+    async poll() {
+      var _a;
+      const before = JSON.stringify(ingestor.getCursors());
+      const result = await ingestor.poll();
+      if (JSON.stringify(ingestor.getCursors()) !== before) {
+        await ((_a = hooks.onPoll) == null ? void 0 : _a.call(hooks, result));
+      }
+      return result;
+    },
     verify: () => verifyLedger(ledger),
     digest: (days) => buildDigest(ledger, { days: days != null ? days : 1 }),
     query: async (query) => queryReceipts(await ledger.readAll(), query)
@@ -957,7 +1017,7 @@ var DEFAULT_SETTINGS = {
 };
 function cleanPath(value, fallback) {
   if (typeof value !== "string") return fallback;
-  const cleaned = value.replace(/\\/g, "/").replace(/\/{2,}/g, "/").replace(/^\/+|\/+$/g, "").trim();
+  const cleaned = value.trim().replace(/\\/g, "/").replace(/\/{2,}/g, "/").replace(/^\/+|\/+$/g, "");
   return cleaned || fallback;
 }
 function clamp(value, min, max) {
@@ -967,8 +1027,13 @@ function sanitizeSettings(raw) {
   const s = raw != null ? raw : {};
   return {
     root: cleanPath(s.root, DEFAULT_SETTINGS.root),
-    messengerRoot: typeof s.messengerRoot === "string" ? s.messengerRoot.replace(/\\/g, "/").replace(/\/{2,}/g, "/").replace(/^\/+|\/+$/g, "").trim() : DEFAULT_SETTINGS.messengerRoot,
+    // same cleaning as root, but a non-string falls back to the default
+    // while a string that cleans to nothing stays "" (bus integration off)
+    messengerRoot: typeof s.messengerRoot === "string" ? cleanPath(s.messengerRoot, "") : DEFAULT_SETTINGS.messengerRoot,
     inboxAddress: typeof s.inboxAddress === "string" && ADDRESS_RE.test(s.inboxAddress) ? s.inboxAddress : DEFAULT_SETTINGS.inboxAddress,
+    // fractional input floors like retentionDays (1.9 → 1); a fraction below
+    // the minimum (0.5) lands on the clamp floor of 1 rather than falling
+    // back to the default — only falsy input takes the default
     pollSeconds: clamp(Math.floor(Number(s.pollSeconds) || DEFAULT_SETTINGS.pollSeconds), 1, 3600),
     retentionDays: clamp(Math.floor(Number(s.retentionDays) || 0), 0, 36500),
     debug: Boolean(s.debug),
@@ -1073,6 +1138,10 @@ var AuditSettingTab = class extends import_obsidian4.PluginSettingTab {
     const settings = this.plugin.settings;
     if (!(key in settings)) return;
     settings[key] = value;
+    const sanitized = sanitizeSettings(this.plugin.settings);
+    for (const k of Object.keys(sanitized)) {
+      settings[k] = sanitized[k];
+    }
     return this.plugin.saveAndReload();
   }
 };
@@ -1090,14 +1159,29 @@ async function recordPruneReceipt(api, dropped, retentionDays) {
 
 // src/hooks-install.ts
 var WRITER_MARKER = "curtis-audit-file.mjs";
+var GENERATOR_MARKER = "Generated by curtis-ai-audit";
 var CLAUDE_SETTINGS = ".claude/settings.json";
 var OPENCODE_PLUGIN = ".opencode/plugin/curtis-audit.js";
 function writerCommand(writerPath, inboxPath, agent, extra = []) {
   const args = ["--agent", agent, "--inbox", inboxPath, ...extra];
-  const q = (a) => /^[\w.=-]+$/.test(a) ? a : `"${a}"`;
+  const q = (a) => {
+    if (/^[\w.=-]+$/.test(a)) return a;
+    return `'${a.replace(/'/g, "'\\''")}'`;
+  };
   return `node ${q(writerPath)} ${args.map(q).join(" ")}`;
 }
-var isOurEntry = (entry) => JSON.stringify(entry).includes(WRITER_MARKER);
+var OUR_COMMAND_RE = new RegExp(
+  `^node\\s+["']?[^"']*${WRITER_MARKER.replace(/[.*+?^${}()|[\]\\]/g, "\\$&")}["']?(?:\\s|$)`
+);
+var isOurEntry = (entry) => {
+  if (entry === null || typeof entry !== "object") return false;
+  const hooks = entry.hooks;
+  if (!Array.isArray(hooks)) return false;
+  return hooks.some((hook) => {
+    const command = hook == null ? void 0 : hook.command;
+    return typeof command === "string" && OUR_COMMAND_RE.test(command.trim());
+  });
+};
 function buildClaudeHooks(existing, writerPath, inboxPath) {
   var _a;
   if (existing === null || typeof existing !== "object" || Array.isArray(existing)) {
@@ -1164,7 +1248,7 @@ function removeClaudeHooks(existing) {
 function buildOpencodePluginSource(writerPath, inboxPath) {
   const writer = JSON.stringify(writerPath);
   const inbox = JSON.stringify(inboxPath);
-  return `// Generated by curtis-ai-audit \u2014 safe to delete; reinstall re-creates it.
+  return `// ${GENERATOR_MARKER} \u2014 safe to delete; reinstall re-creates it.
 // Forwards OpenCode tool activity to the Curtis AI Audit inbox (INTEGRATION.md
 // Path C). Only the tool name and path-like metadata are read; payload content
 // is never recorded. Hook payload shape is best-effort \u2014 verify against your
@@ -1247,7 +1331,7 @@ async function installAgentHooks(io, opts) {
     }
   }
   const opencodeExisting = await io.readText(OPENCODE_PLUGIN);
-  if (opencodeExisting !== null && !opencodeExisting.includes("Generated by curtis-ai-audit")) {
+  if (opencodeExisting !== null && !opencodeExisting.includes(GENERATOR_MARKER)) {
     results.push({
       target: "opencode",
       path: OPENCODE_PLUGIN,
@@ -1278,7 +1362,7 @@ async function uninstallAgentHooks(io) {
   const results = [];
   const claude = await readJson(io, CLAUDE_SETTINGS);
   if (claude === "missing") {
-    results.push({ target: "claude-code", path: CLAUDE_SETTINGS, action: "already-installed" });
+    results.push({ target: "claude-code", path: CLAUDE_SETTINGS, action: "not-installed" });
   } else if (claude === "malformed") {
     results.push({
       target: "claude-code",
@@ -1289,7 +1373,7 @@ async function uninstallAgentHooks(io) {
   } else {
     const { config, removed } = removeClaudeHooks(claude);
     if (removed.length === 0) {
-      results.push({ target: "claude-code", path: CLAUDE_SETTINGS, action: "already-installed" });
+      results.push({ target: "claude-code", path: CLAUDE_SETTINGS, action: "not-installed" });
     } else {
       await io.writeText(CLAUDE_SETTINGS, JSON.stringify(config, null, 2) + "\n");
       results.push({
@@ -1302,16 +1386,23 @@ async function uninstallAgentHooks(io) {
   }
   const opencode = await io.readText(OPENCODE_PLUGIN);
   if (opencode === null) {
-    results.push({ target: "opencode", path: OPENCODE_PLUGIN, action: "already-installed" });
-  } else if (!opencode.includes("Generated by curtis-ai-audit")) {
+    results.push({ target: "opencode", path: OPENCODE_PLUGIN, action: "not-installed" });
+  } else if (!opencode.includes(GENERATOR_MARKER)) {
     results.push({
       target: "opencode",
       path: OPENCODE_PLUGIN,
       action: "aborted",
       detail: "not ours \u2014 left untouched"
     });
+  } else if (!io.deleteText) {
+    results.push({
+      target: "opencode",
+      path: OPENCODE_PLUGIN,
+      action: "manual",
+      detail: `delete ${OPENCODE_PLUGIN} by hand (this io cannot delete files)`
+    });
   } else {
-    await io.writeText(OPENCODE_PLUGIN, "");
+    await io.deleteText(OPENCODE_PLUGIN);
     results.push({ target: "opencode", path: OPENCODE_PLUGIN, action: "removed" });
   }
   return results;
@@ -1414,13 +1505,17 @@ var CurtisAuditPlugin = class extends import_obsidian6.Plugin {
     });
     this.ingestor.setCursors(this.settings.cursors);
     this.api = createApi(this.ledger, this.ingestor, {
-      onReceipt: (receipt) => this.app.workspace.trigger("curtis-audit:receipt", receipt)
+      onReceipt: (receipt) => this.app.workspace.trigger("curtis-audit:receipt", receipt),
+      // external consumers (console, other plugins) persist the cursor too,
+      // not just the pump — an unpersisted cursor re-delivers on restart
+      onPoll: () => this.persistCursors()
     });
     window.curtisAudit = this.api;
   }
   /** Settings changes can move the ledger root; rebuild components, keep cursors. */
   async saveAndReload() {
     const cursors = this.ingestor.getCursors();
+    this.settings = sanitizeSettings(this.settings);
     await this.saveSettings();
     this.buildComponents();
     this.ingestor.setCursors(cursors);
@@ -1458,14 +1553,11 @@ var CurtisAuditPlugin = class extends import_obsidian6.Plugin {
   async pump() {
     try {
       if (!this.settings.messengerRoot) return;
-      const result = await this.ingestor.poll();
-      if (result.delivered > 0) {
-        await this.persistCursors();
-        if (this.settings.debug) {
-          new import_obsidian6.Notice(
-            `Audit: ${result.receipts} receipt(s), ${result.rejected} rejected, ${result.duplicates} duplicate(s)`
-          );
-        }
+      const result = await this.api.poll();
+      if (result.delivered > 0 && this.settings.debug) {
+        new import_obsidian6.Notice(
+          `Audit: ${result.receipts} receipt(s), ${result.rejected} rejected, ${result.duplicates} duplicate(s)`
+        );
       }
       if (this.settings.retentionDays > 0 && Date.now() - this.lastPrune > PRUNE_EVERY_MS) {
         this.lastPrune = Date.now();
@@ -1481,7 +1573,7 @@ var CurtisAuditPlugin = class extends import_obsidian6.Plugin {
   }
   async checkNow() {
     if (!this.settings.messengerRoot) {
-      new import_obsidian6.Notice("Audit inbox is off (clear Messenger root in settings re-enables it)");
+      new import_obsidian6.Notice("Audit inbox is off (set Messenger root in settings to re-enable it)");
       return;
     }
     const result = await this.ingestor.poll();
@@ -1535,13 +1627,19 @@ var CurtisAuditPlugin = class extends import_obsidian6.Plugin {
   /**
    * Retention pass. A nonzero drop is journaled as an ordinary `prune`
    * receipt, so the sequence gaps verify reports on are explained by the
-   * ledger itself (SPEC §7) rather than only by a console line.
+   * ledger itself (SPEC §7) rather than only by a console line. The receipt
+   * precedes the destructive pass: pruning first and failing to journal it
+   * would leave the gaps unexplained in-ledger. The count is a preview, so a
+   * receipt that lands between count and prune is undercounted by at most
+   * that append; the receipt's own seq is claimed before any shard rewrite
+   * and survives it (its `recorded` is always inside the retention window).
    */
   async runPrune() {
     const days = this.settings.retentionDays;
     if (days <= 0) return 0;
-    const dropped = await this.ledger.prune(days);
+    const dropped = await this.ledger.countPrunable(days);
     if (dropped > 0) await recordPruneReceipt(this.api, dropped, days);
+    await this.ledger.prune(days);
     return dropped;
   }
   async openToday() {
@@ -1594,6 +1692,12 @@ var CurtisAuditPlugin = class extends import_obsidian6.Plugin {
           }
         }
         await adapter.write(normalized, content);
+      },
+      deleteText: async (p) => {
+        try {
+          await adapter.remove((0, import_obsidian6.normalizePath)(p));
+        } catch (e) {
+        }
       }
     };
   }
@@ -1631,7 +1735,9 @@ var CurtisAuditPlugin = class extends import_obsidian6.Plugin {
     const parts = [];
     const installed = summary(["added", "updated", "removed"]);
     if (installed) parts.push(`${verb}ed: ${installed}`);
-    if (results.some((r) => r.action === "already-installed")) parts.push("nothing to change");
+    if (results.some((r) => r.action === "already-installed" || r.action === "not-installed")) {
+      parts.push("nothing to change");
+    }
     const manual = results.filter((r) => r.action === "manual");
     if (manual.length) parts.push(`manual: ${manual.map((r) => r.target).join(", ")}`);
     const aborted = results.filter((r) => r.action === "aborted");

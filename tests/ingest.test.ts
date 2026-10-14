@@ -186,7 +186,7 @@ describe("AuditIngestor (cursor and dedupe edges)", () => {
     expect(await ledger.readAll()).toHaveLength(4);
   });
 
-  it("ts fallback delivers strictly-newer messages only (boundary excluded)", async () => {
+  it("ts fallback includes equal-ts messages; sourceId dedupe absorbs the redelivery", async () => {
     const vault = new FakeVault();
     writeInbox(
       vault,
@@ -194,13 +194,61 @@ describe("AuditIngestor (cursor and dedupe edges)", () => {
         busMessage("curtis-ai-chat", '{"action":"inference"}', "2026-10-10T00:00:02.000Z", "msg_b") +
         busMessage("curtis-ai-chat", '{"action":"inference"}', "2026-10-10T00:00:03.000Z", "msg_c")
     );
+    const { ledger, ingestor } = makeIngestor(vault);
+    await ingestor.poll(); // delivers all three; cursor at msg_c
+
+    // crash before the cursor save: a fresh ingestor falls back to a stale ts
+    // that sits exactly on msg_b
     const stale: Record<string, Cursor> = {
       "Messenger/audit/inbox.md": { id: "msg_gone", ts: "2026-10-10T00:00:02.000Z" },
     };
+    const result = await makeIngestor(vault, stale).ingestor.poll();
+    // msg_b sits exactly at the cursor: delivered again (>=, not >), counted
+    // as a duplicate by the shard dedupe — never skipped forever, never
+    // written twice. msg_c redelivers too and is likewise deduped.
+    expect(result.delivered).toBe(2);
+    expect(result.duplicates).toBe(2);
+    expect(result.receipts).toBe(0);
+    expect(await ledger.readAll()).toHaveLength(3);
+  });
+
+  it("a corrupt cursor (non-string id/ts) does not stall the inbox", async () => {
+    const vault = new FakeVault();
+    writeInbox(
+      vault,
+      busMessage("curtis-ai-chat", '{"action":"inference"}', "2026-10-10T00:00:01.000Z", "msg_a")
+    );
+    const corrupt = {
+      "Messenger/audit/inbox.md": { id: 42, ts: undefined } as unknown as Cursor,
+    };
+    const { ledger, ingestor } = makeIngestor(vault, corrupt);
+    const result = await ingestor.poll();
+    // deterministic skip-or-reject: the garbage cursor is ignored, the
+    // message is delivered normally
+    expect(result.delivered).toBe(1);
+    expect(result.receipts).toBe(1);
+    expect(await ledger.readAll()).toHaveLength(1);
+  });
+
+  it("an unparseable message ts is treated as pending and rejected, not silently skipped", async () => {
+    const vault = new FakeVault();
+    writeInbox(
+      vault,
+      busMessage("curtis-ai-chat", '{"action":"inference"}', "not a date", "msg_bad") +
+        busMessage("curtis-ai-chat", '{"action":"inference"}', "2026-10-10T00:00:03.000Z", "msg_ok")
+    );
+    const stale: Record<string, Cursor> = {
+      "Messenger/audit/inbox.md": { id: "msg_gone", ts: "2026-10-10T00:00:00.000Z" },
+    };
     const { ledger, ingestor } = makeIngestor(vault, stale);
     const result = await ingestor.poll();
-    expect(result.delivered).toBe(1); // only msg_c; msg_b is at, not past, the cursor
-    expect(await ledger.readAll().then((r) => r.map((x) => x.sourceId))).toEqual(["msg_c"]);
+    // the garbage-ts message becomes pending, ingestMessage rejects it (its
+    // ts fails payload validation), and the cursor still advances past it
+    expect(result.delivered).toBe(2);
+    expect(result.rejected).toBe(1);
+    expect(result.receipts).toBe(1);
+    expect(ingestor.getCursors()["Messenger/audit/inbox.md"].id).toBe("msg_ok");
+    expect(await ledger.readAll()).toHaveLength(1);
   });
 
   it("shallow-copies the cursor map on the way in and out (nested cursors are shared)", () => {

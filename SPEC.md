@@ -59,6 +59,14 @@ stable input for any future hash chain).
 `recorded` is the local fact about the write. Shard placement follows
 `recorded`.
 
+All day boundaries are UTC: shard placement, `Open today's ledger`, digest
+windows, and prune cutoffs. This is internally consistent and is the ISO-8601
+UTC the schema already promises, but it has a user-facing consequence: an
+action at 9pm ET (UTC-5) carries a `recorded` stamp of tomorrow and lands in
+tomorrow's shard, and `Open today's ledger` opens UTC-today, not
+local-today. If you live at UTC-13, your evening happens in someone else's
+tomorrow — the ledger says so, it just doesn't apologize.
+
 ## 3. Ledger blocks
 
 ```
@@ -114,6 +122,21 @@ failed) and is no longer there.
 High-water marks live in `state.json` (rewritten, derived state). If it is
 lost or corrupt, the ledger rebuilds it by scanning the shards.
 
+**Single-writer, stated plainly:** there is no lockfile and no single-writer
+guard. `state.json` is per-device derived state, and sequence numbers are
+claimed in memory. The contract is **one writer per vault at a time** — the
+vault open in one Obsidian instance. If two devices with this plugin have the
+same vault open (Obsidian Sync, Syncthing, anything that merges both sides),
+each independently claims the same `(agent, seq)` and both receipts get
+written. Nothing corrupts: both blocks parse and both receipts are intact.
+Verify then reports duplicate `(agent, seq)` (and possibly duplicate `id`) at
+error severity — "Ledger BROKEN" — for a ledger that is, in the corruption
+sense, fine. Path B is affected too: a shared synced `inbox.md` polled by two
+devices can ingest the same message twice. Reconciling `state.json` against
+the newest shards at load narrows the crash window between append and save,
+but a crash window is not a multi-writer window — reconciliation cannot close
+this one. Sync your vault, but let one machine hold the pen.
+
 ## 6. Verify
 
 `Verify ledger` (command or `window.curtisAudit.verify()`) scans all shards
@@ -127,6 +150,11 @@ and reports:
 | out-of-`recorded`-order in a shard | warning  | the file was reordered/merged by something     |
 | per-agent seq gaps                 | warning  | deletions, failed writes, or pruning (§7)      |
 
+If verify reports duplicate `(agent, seq)` and you sync your vault across
+devices, the most common cause is the vault being open in Obsidian on two
+machines at once — see §5. No corruption occurred; close one side and stop
+syncing mid-session.
+
 **Limits, stated plainly:** none of this proves the ledger is complete or
 correct. A careful editor who also renumbers `seq`s defeats it. It detects
 the casual, accidental, and lazy cases — which for a personal journal is the
@@ -136,7 +164,8 @@ point.
 
 Retention is **off by default (0 = keep forever)** — an audit trail that
 silently ages out is a policy contradiction. When enabled, old receipts are
-pruned by rewriting/deleting whole shards. Pruning intentionally creates seq
+pruned by rewriting/deleting whole shards. Prune cutoffs are UTC days, like
+every other day boundary in the ledger (§2). Pruning intentionally creates seq
 gaps; verify reports them as warnings with that caveat. Whole-shard deletion
 also means "history before the earliest remaining shard" is unknowable —
 the gaps-before-min-seq are not enumerated.

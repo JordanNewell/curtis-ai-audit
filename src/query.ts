@@ -26,6 +26,13 @@ export interface ReceiptQuery {
   model?: string;
   /** Subject prefix: "Notes/" matches every subject under Notes. */
   subject?: string;
+  /**
+   * When true, `subject` must equal the receipt's subject exactly instead of
+   * prefix-matching. Default false (prefix semantics). For folder-scoped
+   * prefix matching without sibling collisions ("Notes" vs "Notes2"), pass
+   * the trailing slash: "Notes/".
+   */
+  exactPath?: boolean;
   /** Inclusive lower bound on `recorded` (ISO string or epoch ms). */
   since?: string | number;
   /** Inclusive upper bound on `recorded` (ISO string or epoch ms). */
@@ -68,7 +75,12 @@ export function queryReceipts(
     if (query.action !== undefined && r.action !== query.action) return false;
     if (query.status !== undefined && r.status !== query.status) return false;
     if (query.model !== undefined && r.model !== query.model) return false;
-    if (query.subject !== undefined && !(r.subject ?? "").startsWith(query.subject)) return false;
+    if (query.subject !== undefined) {
+      const hit = query.exactPath
+        ? r.subject === query.subject
+        : (r.subject ?? "").startsWith(query.subject);
+      if (!hit) return false;
+    }
     const ms = Date.parse(r.recorded);
     return ms >= sinceMs && ms <= untilMs;
   });

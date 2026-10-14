@@ -222,6 +222,42 @@ describe("verifyLedger (edge cases)", () => {
     expect(issue?.message).toContain("more)");
   });
 
+  it("bounds gap enumeration: a huge seq range is counted arithmetically, not materialized", async () => {
+    // seqs 0 and 9e15: a naive per-integer loop would hang or OOM; the count
+    // is arithmetic and the list is only materialized for small ranges
+    const day = "2026-10-10";
+    const ledger = await ledgerWithFiles({
+      [`Audit/ledger/${day}.md`]:
+        shardHeader(day) +
+        block(makeReceipt({ seq: 0, recorded: `${day}T01:00:00.000Z` })) +
+        block(makeReceipt({ seq: 9_000_000_000_000_000, recorded: `${day}T02:00:00.000Z` })),
+    });
+    const start = Date.now();
+    const report = await verifyLedger(ledger);
+    expect(Date.now() - start).toBeLessThan(2000);
+    expect(report.agents[0]).toMatchObject({
+      count: 2,
+      minSeq: 0,
+      maxSeq: 9_000_000_000_000_000,
+    });
+    expect(report.agents[0].missing).toHaveLength(0); // not materialized
+    const issue = report.issues.find((i) => i.message.includes("missing sequence number"));
+    expect(issue?.message).toContain("8999999999999999 missing sequence number(s)");
+    expect(issue?.message).toContain("too large to list");
+  });
+
+  it("materializes the missing list when the gap range is small", async () => {
+    const day = new Date().toISOString().slice(0, 10);
+    const ledger = await ledgerWithFiles({
+      [`Audit/ledger/${day}.md`]:
+        shardHeader(day) +
+        block(makeReceipt({ seq: 0, recorded: `${day}T01:00:00.000Z` })) +
+        block(makeReceipt({ seq: 3, recorded: `${day}T02:00:00.000Z` })),
+    });
+    const report = await verifyLedger(ledger);
+    expect(report.agents[0].missing).toEqual([1, 2]);
+  });
+
   it("reports per-agent summaries sorted by address", async () => {
     const day = new Date().toISOString().slice(0, 10);
     const ledger = await ledgerWithFiles({

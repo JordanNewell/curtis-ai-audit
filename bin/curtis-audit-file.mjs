@@ -28,7 +28,7 @@
 
 import fs from "node:fs";
 import path from "node:path";
-import { pathToFileURL } from "node:url";
+import { fileURLToPath, pathToFileURL } from "node:url";
 
 const MARKER = "messenger";
 const STATUSES = new Set(["ok", "error", "aborted"]);
@@ -141,16 +141,43 @@ export function mapPayload(payload, overrides = {}) {
 
 export function buildBlock({ from, ts, id }, payload, overrides = {}) {
   const fields = mapPayload(payload, overrides);
-  const body = canonicalJson(fields);
+  // same escaping as the envelope (mirrors src/protocol.ts encodeBlock): a
+  // sender-supplied summary/subject containing `-->` or `<!-- /messenger -->`
+  // would otherwise terminate the block early and the plugin would reject
+  // the receipt. JSON unicode escapes parse back to the original value.
+  const body = escapeComment(canonicalJson(fields));
   const json = buildEnvelope({ from, ts, id });
   return `<!-- ${MARKER}: ${json} -->\n${body}\n<!-- /${MARKER} -->\n\n`;
 }
 
-function parseArgs(argv) {
+class UsageError extends Error {}
+
+const KNOWN_ARGS = new Set(["agent", "inbox", "action", "status"]);
+
+export function parseArgs(argv) {
   const args = {};
   for (let i = 0; i < argv.length; i++) {
     const arg = argv[i];
-    if (arg.startsWith("--")) args[arg.slice(2)] = argv[i + 1] ?? "";
+    if (!arg.startsWith("--")) continue;
+    const eq = arg.indexOf("=");
+    const key = eq >= 0 ? arg.slice(2, eq) : arg.slice(2);
+    if (!KNOWN_ARGS.has(key)) {
+      throw new UsageError(`unknown option --${key} (known: ${[...KNOWN_ARGS].map((k) => `--${k}`).join(", ")})`);
+    }
+    if (eq >= 0) {
+      args[key] = arg.slice(eq + 1);
+      continue;
+    }
+    const value = argv[i + 1];
+    if (value === undefined || value === "" || value.trim() === "" || value.startsWith("--")) {
+      if (key === "inbox") {
+        throw new UsageError("--inbox requires a file path");
+      }
+      args[key] = ""; // agent/action/status keep their fallbacks
+      continue;
+    }
+    args[key] = value;
+    i++; // consume the value so it is not rescanned as a flag
   }
   return args;
 }
@@ -210,11 +237,45 @@ async function main() {
   fs.appendFileSync(inbox, block);
 }
 
+/**
+ * Whether this module was launched as the entry script. The naive
+ * `pathToFileURL(argv[1]) === import.meta.url` check silently fails on
+ * Windows (drive-letter case, symlink/realpath), leaving main() unrun and
+ * the receipt dropped with exit 0 — compare case-insensitively there, and
+ * fall back to resolved realpaths when both paths exist.
+ */
+export function isDirectInvocation(argv1, moduleUrl) {
+  if (!argv1) return false;
+  let entry;
+  try {
+    entry = fileURLToPath(moduleUrl);
+  } catch {
+    return false;
+  }
+  const ci = (p) => (process.platform === "win32" ? p.toLowerCase() : p);
+  let a;
+  let b;
+  try {
+    a = ci(path.resolve(argv1));
+    b = ci(path.resolve(entry));
+  } catch {
+    return false;
+  }
+  if (a === b) return true;
+  try {
+    return ci(fs.realpathSync(path.resolve(argv1))) === ci(fs.realpathSync(path.resolve(entry)));
+  } catch {
+    return false;
+  }
+}
+
 // Only run the CLI when executed directly, so tests can import the functions.
-const invoked = process.argv[1] ? pathToFileURL(process.argv[1]).href === import.meta.url : false;
+const invoked = isDirectInvocation(process.argv[1], import.meta.url);
 if (invoked) {
   main().catch((err) => {
     console.error(`[curtis-audit-file] ${err instanceof Error ? err.message : String(err)}`);
-    process.exit(0);
+    // usage mistakes should be loud (non-zero); operational failures keep the
+    // never-break-the-agent contract of exit 0
+    process.exitCode = err instanceof UsageError ? 2 : 0;
   });
 }

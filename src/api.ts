@@ -45,7 +45,11 @@ declare global {
 export function createApi(
   ledger: AuditLedger,
   ingestor: AuditIngestor,
-  hooks: { onReceipt?: (receipt: AuditReceiptV1) => void } = {}
+  hooks: {
+    onReceipt?: (receipt: AuditReceiptV1) => void;
+    /** Called after a poll that advanced the cursor, so external consumers persist too. */
+    onPoll?: (result: IngestResult) => void | Promise<void>;
+  } = {}
 ): CurtisAuditApiV1 {
   return {
     version: 1,
@@ -64,7 +68,14 @@ export function createApi(
       hooks.onReceipt?.(receipt);
       return receipt;
     },
-    poll: () => ingestor.poll(),
+    async poll() {
+      const before = JSON.stringify(ingestor.getCursors());
+      const result = await ingestor.poll();
+      if (JSON.stringify(ingestor.getCursors()) !== before) {
+        await hooks.onPoll?.(result);
+      }
+      return result;
+    },
     verify: () => verifyLedger(ledger),
     digest: (days) => buildDigest(ledger, { days: days ?? 1 }),
     query: async (query) => queryReceipts(await ledger.readAll(), query),

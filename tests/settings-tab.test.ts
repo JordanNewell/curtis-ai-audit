@@ -1,6 +1,6 @@
 import { describe, expect, it, vi } from "vitest";
 import { AuditSettingTab } from "../src/settings-tab";
-import { AuditSettings } from "../src/settings";
+import { AuditSettings, DEFAULT_SETTINGS } from "../src/settings";
 
 function makeTab(settings: AuditSettings) {
   const plugin = {
@@ -61,6 +61,30 @@ describe("AuditSettingTab", () => {
     await tab.setControlValue("root", "AuditVault");
     expect(settings.root).toBe("AuditVault");
     expect(plugin.saveAndReload).toHaveBeenCalledTimes(1);
+  });
+
+  it("sanitizes the committed value before the reload persists it", async () => {
+    // the choke point is the commit (setControlValue → saveAndReload), so raw
+    // values never reach data.json; setControlValue is not called per
+    // keystroke, so clamping only lands at commit, not mid-typing
+    const settings = { root: "Audit", pollSeconds: 30 } as AuditSettings;
+    const { tab, plugin } = makeTab(settings);
+    await tab.setControlValue("root", "  Audit//ledger\\\\ ");
+    expect(settings.root).toBe("Audit/ledger");
+    await tab.setControlValue("pollSeconds", 0); // falsy → default
+    expect(settings.pollSeconds).toBe(DEFAULT_SETTINGS.pollSeconds);
+    await tab.setControlValue("inboxAddress", "has space"); // invalid → default
+    expect(settings.inboxAddress).toBe(DEFAULT_SETTINGS.inboxAddress);
+    expect(plugin.saveAndReload).toHaveBeenCalledTimes(3);
+  });
+
+  it("sanitizes in place, preserving the settings object identity", async () => {
+    const settings = { root: "Audit" } as AuditSettings;
+    const { tab } = makeTab(settings);
+    const before = settings;
+    await tab.setControlValue("root", "  //Audit//  ");
+    expect(settings).toBe(before); // components hold this reference
+    expect(settings.root).toBe("Audit");
   });
 
   it("ignores keys the settings object does not own", async () => {

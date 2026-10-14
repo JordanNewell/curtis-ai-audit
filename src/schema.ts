@@ -123,6 +123,13 @@ export function validatePayload(payload: unknown): ValidationResult {
   return { ok: errors.length === 0, errors };
 }
 
+/**
+ * Upper bound for receipt sequence numbers. The ledger hands out integers
+ * from 0; anything past Number.MAX_SAFE_INTEGER is not a seq this ledger
+ * could have issued, and verify must never enumerate a range that large.
+ */
+export const MAX_SEQ = Number.MAX_SAFE_INTEGER;
+
 /** Validate a parsed ledger-block header as a complete receipt. */
 export function validateReceipt(value: unknown): ValidationResult {
   if (typeof value !== "object" || value === null || Array.isArray(value)) {
@@ -132,8 +139,8 @@ export function validateReceipt(value: unknown): ValidationResult {
   const errors: string[] = [];
   if (r.schema !== RECEIPT_SCHEMA) errors.push(`schema must be "${RECEIPT_SCHEMA}"`);
   if (typeof r.id !== "string" || !r.id) errors.push("id must be a non-empty string");
-  if (typeof r.seq !== "number" || !Number.isInteger(r.seq) || r.seq < 0) {
-    errors.push("seq must be a non-negative integer");
+  if (typeof r.seq !== "number" || !Number.isInteger(r.seq) || r.seq < 0 || r.seq > MAX_SEQ) {
+    errors.push("seq must be a non-negative integer within the safe range");
   }
   if (typeof r.agent !== "string" || !ADDRESS_RE.test(r.agent)) {
     errors.push("agent must be a valid address");
