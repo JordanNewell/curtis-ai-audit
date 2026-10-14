@@ -374,7 +374,6 @@ var AuditLedger = class {
     this.fileManager = fileManager;
     this.root = root;
     this.seqByAgent = /* @__PURE__ */ new Map();
-    this.stateLoaded = false;
     this.stateDirty = false;
   }
   get ledgerDir() {
@@ -503,9 +502,17 @@ var AuditLedger = class {
     await writeFile(this.vault, relPath, content);
   }
   async ensureStateLoaded() {
+    if (!this.stateLoading) {
+      this.stateLoading = this.loadState().catch((err) => {
+        this.stateLoading = void 0;
+        throw err;
+      });
+    }
+    await this.stateLoading;
+  }
+  async loadState() {
     var _a;
-    if (this.stateLoaded) return;
-    this.stateLoaded = true;
+    let loaded = false;
     const file = this.vault.getAbstractFileByPath(this.statePath);
     if (file instanceof import_obsidian2.TFile) {
       try {
@@ -517,12 +524,33 @@ var AuditLedger = class {
               this.seqByAgent.set(agent, lastSeq);
             }
           }
-          return;
+          loaded = true;
         }
       } catch (e) {
       }
     }
-    await this.rebuildState();
+    if (loaded) {
+      await this.reconcileRecentShards();
+    } else {
+      await this.rebuildState();
+    }
+  }
+  /**
+   * Crash horizon: a receipt can land in a shard before saveState() runs,
+   * leaving state.json behind — the next start would re-issue its seq.
+   * Reconcile the high-water marks against the newest 1-2 daily shards
+   * (the same window as the dedupe check) and keep the max.
+   */
+  async reconcileRecentShards() {
+    for (const path of this.listShards().slice(-2)) {
+      for (const receipt of (await this.readShard(path)).receipts) {
+        const last = this.seqByAgent.get(receipt.agent);
+        if (last === void 0 || receipt.seq > last) {
+          this.seqByAgent.set(receipt.agent, receipt.seq);
+          this.stateDirty = true;
+        }
+      }
+    }
   }
   /** Scan every shard and recompute per-agent sequence high-water marks. */
   async rebuildState() {

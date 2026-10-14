@@ -1,5 +1,5 @@
 import { describe, expect, it } from "vitest";
-import { Vault, normalizePath } from "obsidian";
+import { TFile, Vault, normalizePath } from "obsidian";
 import { AuditLedger, shardHeader } from "../src/ledger";
 import { AuditReceiptV1, buildReceipt } from "../src/schema";
 import { encodeBlock } from "../src/protocol";
@@ -344,6 +344,129 @@ describe("AuditLedger state (edge cases)", () => {
     await ledger.rebuildState();
     expect(vault.readRaw("Audit/state.json")).toContain('"agent-a":{"lastSeq":3}');
     expect(vault.readRaw("Audit/state.json")).toContain('"agent-b":{"lastSeq":7}');
+  });
+});
+
+describe("AuditLedger state (crash and race)", () => {
+  /** Vault whose state.json read blocks until the test releases the gate,
+   *  so a state load can be held in flight across another claimSeq call. */
+  class GatedVault extends FakeVault {
+    private gate: Promise<void> | undefined;
+    private release: (() => void) | undefined;
+
+    holdStateRead(): void {
+      this.gate = new Promise<void>((resolve) => {
+        this.release = resolve;
+      });
+    }
+
+    openStateRead(): void {
+      this.release?.();
+    }
+
+    async read(file: TFile): Promise<string> {
+      if (normalizePath(file.path) === "Audit/state.json" && this.gate) {
+        await this.gate;
+      }
+      return super.read(file);
+    }
+  }
+
+  it("delays concurrent claims until the in-flight state load finishes", async () => {
+    const vault = new GatedVault({
+      "Audit/state.json": '{"version":1,"agents":{"curtis-ai-chat":{"lastSeq":5}},"updated":"t"}',
+    });
+    vault.holdStateRead();
+    const ledger = makeLedger(vault);
+    const first = ledger.claimSeq("curtis-ai-chat");
+    const second = ledger.claimSeq("curtis-ai-chat");
+    vault.openStateRead();
+    // both claims wait for the load and read the persisted watermark —
+    // neither sees an empty seq table
+    expect(await first).toBe(6);
+    expect(await second).toBe(7);
+  });
+
+  it("clears a failed state load so a retry can run", async () => {
+    const vault = new FakeVault();
+    const day = today();
+    vault.files.set(
+      `Audit/ledger/${day}.md`,
+      shardHeader(day) +
+        encodeBlock(LEDGER_MARKER, makeReceipt({ seq: 2, recorded: `${day}T01:00:00.000Z` }), "a")
+    );
+    class FailingVault extends FakeVault {
+      failShardReads = false;
+      async read(file: TFile): Promise<string> {
+        if (this.failShardReads && normalizePath(file.path).includes("/ledger/")) {
+          throw new Error("boom");
+        }
+        return super.read(file);
+      }
+    }
+    const failing = new FailingVault();
+    failing.files = new Map(vault.files);
+    const ledger = makeLedger(failing);
+    failing.failShardReads = true;
+    await expect(ledger.claimSeq("curtis-ai-chat")).rejects.toThrow("boom");
+    failing.failShardReads = false;
+    // the retry re-runs the load instead of reusing the failed memo
+    expect(await ledger.claimSeq("curtis-ai-chat")).toBe(3);
+  });
+
+  it("reconciles state.json against the newest shard after a crash between append and saveState", async () => {
+    const vault = new FakeVault();
+    const day = today();
+    vault.files.set(
+      "Audit/state.json",
+      '{"version":1,"agents":{"curtis-ai-chat":{"lastSeq":2}},"updated":"t"}'
+    );
+    // the receipt landed in the shard but state.json never caught up
+    vault.files.set(
+      `Audit/ledger/${day}.md`,
+      shardHeader(day) +
+        encodeBlock(LEDGER_MARKER, makeReceipt({ seq: 9, recorded: `${day}T01:00:00.000Z` }), "a")
+    );
+    const ledger = makeLedger(vault);
+    expect(await ledger.claimSeq("curtis-ai-chat")).toBe(10);
+  });
+
+  it("reconciles across the two newest shards at a day boundary", async () => {
+    const vault = new FakeVault();
+    const today0 = today();
+    const yesterday = new Date(Date.now() - 86400000).toISOString().slice(0, 10);
+    vault.files.set(
+      "Audit/state.json",
+      '{"version":1,"agents":{"curtis-ai-chat":{"lastSeq":2}},"updated":"t"}'
+    );
+    vault.files.set(
+      `Audit/ledger/${yesterday}.md`,
+      shardHeader(yesterday) +
+        encodeBlock(LEDGER_MARKER, makeReceipt({ seq: 7, recorded: `${yesterday}T23:00:00.000Z` }), "a")
+    );
+    vault.files.set(
+      `Audit/ledger/${today0}.md`,
+      shardHeader(today0) +
+        encodeBlock(LEDGER_MARKER, makeReceipt({ seq: 12, recorded: `${today0}T01:00:00.000Z` }), "b")
+    );
+    const ledger = makeLedger(vault);
+    expect(await ledger.claimSeq("curtis-ai-chat")).toBe(13);
+  });
+
+  it("keeps the persisted high-water mark when the shards are behind it", async () => {
+    const vault = new FakeVault();
+    const day = today();
+    vault.files.set(
+      "Audit/state.json",
+      '{"version":1,"agents":{"curtis-ai-chat":{"lastSeq":50}},"updated":"t"}'
+    );
+    vault.files.set(
+      `Audit/ledger/${day}.md`,
+      shardHeader(day) +
+        encodeBlock(LEDGER_MARKER, makeReceipt({ seq: 9, recorded: `${day}T01:00:00.000Z` }), "a")
+    );
+    const ledger = makeLedger(vault);
+    expect(await ledger.claimSeq("curtis-ai-chat")).toBe(51);
   });
 });
 
