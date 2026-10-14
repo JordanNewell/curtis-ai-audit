@@ -66,6 +66,14 @@ describe("queryReceipts", () => {
     ]);
   });
 
+  it("matches subject as a raw string prefix, not path-segment aware (documented)", () => {
+    // a subject filter without a trailing slash also matches sibling folders
+    const receipts = [makeReceipt({ subject: "Notes2/b.md" })];
+    expect(queryReceipts(receipts, { subject: "Notes" }).map((r) => r.subject)).toEqual([
+      "Notes2/b.md",
+    ]);
+  });
+
   it("applies inclusive since/until bounds on recorded", () => {
     const receipts = [at(30), at(20), at(10)];
     const since = new Date(T0 - 20 * 60000).toISOString();
@@ -107,5 +115,30 @@ describe("queryReceipts", () => {
     const snapshot = receipts.map((r) => r.id);
     queryReceipts(receipts, {});
     expect(receipts.map((r) => r.id)).toEqual(snapshot);
+  });
+
+  it("returns nothing when the window is inverted", () => {
+    const receipts = fixture();
+    const t = new Date(T0 - 15 * 60000).toISOString();
+    expect(queryReceipts(receipts, { since: t, until: new Date(T0 - 16 * 60000).toISOString() })).toEqual([]);
+  });
+
+  it("filters the aborted status too", () => {
+    const receipts = [makeReceipt({ status: "aborted" }), makeReceipt({ status: "ok" })];
+    expect(queryReceipts(receipts, { status: "aborted" })).toHaveLength(1);
+  });
+
+  it("handles empty input without complaint", () => {
+    expect(queryReceipts([], { agent: "x" })).toEqual([]);
+  });
+
+  it("combines several filters conjunctively", () => {
+    const receipts = [
+      makeReceipt({ agent: "a", action: "inference", status: "error" }),
+      makeReceipt({ agent: "a", action: "tool-call", status: "error" }),
+      makeReceipt({ agent: "b", action: "inference", status: "error" }),
+      makeReceipt({ agent: "a", action: "inference", status: "ok" }),
+    ];
+    expect(queryReceipts(receipts, { agent: "a", action: "inference", status: "error" })).toHaveLength(1);
   });
 });

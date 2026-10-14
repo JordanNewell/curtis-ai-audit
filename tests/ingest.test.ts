@@ -1,7 +1,8 @@
 import { describe, expect, it } from "vitest";
 import { Vault } from "obsidian";
-import { AuditLedger } from "../src/ledger";
+import { AuditLedger, shardHeader } from "../src/ledger";
 import { AuditIngestor, Cursor } from "../src/ingest";
+import { buildReceipt } from "../src/schema";
 import { encodeBlock } from "../src/protocol";
 import { FakeVault, fakeFileManager } from "./fake-vault";
 
@@ -119,5 +120,111 @@ describe("AuditIngestor", () => {
   it("does nothing when the inbox does not exist", async () => {
     const { ingestor } = makeIngestor(new FakeVault());
     expect(await ingestor.poll()).toEqual({ delivered: 0, receipts: 0, rejected: 0, duplicates: 0 });
+  });
+});
+
+describe("AuditIngestor (cursor and dedupe edges)", () => {
+  it("advances the cursor past rejected payloads so they are not retried", async () => {
+    const vault = new FakeVault();
+    const { ledger, ingestor } = makeIngestor(vault);
+    writeInbox(
+      vault,
+      busMessage("curtis-ai-chat", '{"action":"inference","status":"meh"}', "2026-10-10T00:00:01.000Z", "msg_bad")
+    );
+    expect(await ingestor.poll()).toMatchObject({ delivered: 1, rejected: 1 });
+    expect(ingestor.getCursors()["Messenger/audit/inbox.md"].id).toBe("msg_bad");
+
+    // the same junk on a later poll is not redelivered
+    expect(await ingestor.poll()).toEqual({ delivered: 0, receipts: 0, rejected: 0, duplicates: 0 });
+    expect(await ledger.readAll()).toHaveLength(0);
+  });
+
+  it("rejects payloads that are valid JSON but not objects", async () => {
+    const vault = new FakeVault();
+    const { ledger, ingestor } = makeIngestor(vault);
+    writeInbox(
+      vault,
+      busMessage("curtis-ai-chat", "[1,2,3]", "2026-10-10T00:00:01.000Z", "msg_arr") +
+        busMessage("curtis-ai-chat", '"just a string"', "2026-10-10T00:00:02.000Z", "msg_str")
+    );
+    expect(await ingestor.poll()).toMatchObject({ delivered: 2, rejected: 2 });
+    expect(await ledger.readAll()).toHaveLength(0);
+  });
+
+  it("only checks recent shards for redelivery (documented limit)", async () => {
+    const vault = new FakeVault();
+    const day = (offset: number): string =>
+      new Date(Date.parse("2026-10-05T00:00:00.000Z") + offset * 86400000)
+        .toISOString()
+        .slice(0, 10);
+    const seeded = (d: string, hour: number, sourceId: string): string => {
+      const receipt = buildReceipt(
+        { agent: "curtis-ai-chat", action: "inference" },
+        { agent: "curtis-ai-chat", sourceId }
+      );
+      receipt.seq = 0;
+      receipt.recorded = `${d}T0${hour}:00:00.000Z`;
+      return encodeBlock("curtis-audit", receipt as unknown as Record<string, unknown>, "body");
+    };
+    // the oldest shard carries msg_old; the dedupe window (last 2 shards)
+    // covers only day(1) and day(2), whose receipts have other source ids
+    vault.files.set(
+      `Audit/ledger/${day(0)}.md`,
+      shardHeader(day(0)) + seeded(day(0), 1, "msg_old")
+    );
+    vault.files.set(`Audit/ledger/${day(1)}.md`, shardHeader(day(1)) + seeded(day(1), 1, "msg_other1"));
+    vault.files.set(`Audit/ledger/${day(2)}.md`, shardHeader(day(2)) + seeded(day(2), 1, "msg_other2"));
+
+    writeInbox(
+      vault,
+      busMessage("curtis-ai-chat", '{"action":"inference"}', "2026-10-10T00:00:00.000Z", "msg_old")
+    );
+    const { ledger, ingestor } = makeIngestor(vault);
+    const result = await ingestor.poll();
+    // not caught by the window → written again; ledger keeps all four
+    expect(result.receipts).toBe(1);
+    expect(await ledger.readAll()).toHaveLength(4);
+  });
+
+  it("ts fallback delivers strictly-newer messages only (boundary excluded)", async () => {
+    const vault = new FakeVault();
+    writeInbox(
+      vault,
+      busMessage("curtis-ai-chat", '{"action":"inference"}', "2026-10-10T00:00:01.000Z", "msg_a") +
+        busMessage("curtis-ai-chat", '{"action":"inference"}', "2026-10-10T00:00:02.000Z", "msg_b") +
+        busMessage("curtis-ai-chat", '{"action":"inference"}', "2026-10-10T00:00:03.000Z", "msg_c")
+    );
+    const stale: Record<string, Cursor> = {
+      "Messenger/audit/inbox.md": { id: "msg_gone", ts: "2026-10-10T00:00:02.000Z" },
+    };
+    const { ledger, ingestor } = makeIngestor(vault, stale);
+    const result = await ingestor.poll();
+    expect(result.delivered).toBe(1); // only msg_c; msg_b is at, not past, the cursor
+    expect(await ledger.readAll().then((r) => r.map((x) => x.sourceId))).toEqual(["msg_c"]);
+  });
+
+  it("shallow-copies the cursor map on the way in and out (nested cursors are shared)", () => {
+    const { ingestor } = makeIngestor(new FakeVault());
+    const mine: Record<string, Cursor> = {
+      "Messenger/audit/inbox.md": { id: "msg_1", ts: "2026-10-10T00:00:00.000Z" },
+    };
+    ingestor.setCursors(mine);
+    const outside = ingestor.getCursors();
+    outside["extra"] = { id: "x", ts: "t" };
+    // the map itself is copied: new keys do not leak through either direction
+    expect(ingestor.getCursors()["extra"]).toBeUndefined();
+    expect(Object.keys(mine)).toHaveLength(1);
+    // but the copy is shallow: mutating a nested cursor object is visible both
+    // ways (documented current behavior — settings.ts keeps the same reference)
+    outside["Messenger/audit/inbox.md"].id = "mutated";
+    expect(mine["Messenger/audit/inbox.md"].id).toBe("mutated");
+  });
+
+  it("a poll with only junk leaves state.json unwritten", async () => {
+    const vault = new FakeVault();
+    const { ingestor } = makeIngestor(vault);
+    writeInbox(vault, busMessage("curtis-ai-chat", "junk", "2026-10-10T00:00:01.000Z"));
+    await ingestor.poll();
+    expect(vault.readRaw("Audit/state.json")).toBeUndefined();
   });
 });

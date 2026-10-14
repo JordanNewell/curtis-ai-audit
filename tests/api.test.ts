@@ -90,6 +90,28 @@ describe("api.query", () => {
     const oldest = await api.query({ order: "asc", limit: 1 });
     expect(oldest[0].agent).toBe("curtis-ai-chat");
   });
+
+  it("propagates query validation errors to the caller", async () => {
+    const { api } = makeApi(new FakeVault());
+    await expect(api.query({ limit: 0 })).rejects.toThrow(/limit/);
+  });
+});
+
+describe("api.digest / api.verify", () => {
+  it("surfaces the read-side reports through the api surface", async () => {
+    const { api } = makeApi(new FakeVault());
+    await api.record({ agent: "curtis-ai-chat", action: "inference", model: "gpt-4o" });
+    await api.record({ agent: "curtis-ai-chat", action: "inference", status: "error" });
+
+    const digest = await api.digest();
+    expect(digest).toContain("**2** receipts");
+    expect(digest).toContain("### Latest receipts");
+
+    const report = await api.verify();
+    expect(report.ok).toBe(true);
+    expect(report.receipts).toBe(2);
+    expect(api.version).toBe(1);
+  });
 });
 
 describe("recordPruneReceipt", () => {
