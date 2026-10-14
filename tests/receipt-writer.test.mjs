@@ -206,7 +206,11 @@ describe("isDirectInvocation", () => {
     expect(isDirectInvocation(WRITER_PATH, url)).toBe(true);
   });
 
-  it("matches case-insensitively so Windows drive-letter case cannot defeat it", () => {
+  const itOnWindows = process.platform === "win32" ? it : it.skip;
+  itOnWindows("matches case-insensitively so drive-letter case cannot defeat it", () => {
+    // case-differing paths are the same file only on Windows filesystems;
+    // on POSIX a case change is a genuinely different path, so the guard
+    // must stay strict there.
     const variants = [
       WRITER_PATH.toLowerCase(),
       WRITER_PATH.toUpperCase(),
