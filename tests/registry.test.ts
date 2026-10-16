@@ -119,6 +119,18 @@ describe("mutateFileAtomic", () => {
       mutateFileAtomic(asVault(vault), "Audit/state.json", (c) => c)
     ).rejects.toThrow(/no file/);
   });
+
+  it("passes a TFile to Vault#process — a string path throws on real Obsidian 1.14+", async () => {
+    // Regression: the writer used to call vault.process(file.path, fn). The
+    // duck-type check ("typeof process === function") can't tell the two
+    // apart, and real Obsidian assigns options on the argument — so the
+    // string path survived every unit test and threw at runtime, killing
+    // every append after a shard's first receipt. The fake now rejects
+    // string paths, and this test pins the contract explicitly.
+    const vault = new FakeVault({ "Audit/state.json": "x" });
+    await mutateFileAtomic(asVault(vault), "Audit/state.json", (c) => c + "+");
+    expect(vault.readRaw("Audit/state.json")).toBe("x+");
+  });
 });
 
 describe("inboxHeader", () => {

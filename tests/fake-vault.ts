@@ -104,9 +104,14 @@ export class FakeVault {
     }
   }
 
-  async process(path: string, fn: (data: string) => string): Promise<string> {
+  /** Mirrors Obsidian 1.14 semantics: process takes a TFile — a string path
+   * is an API misuse and must fail here, not pass silently. */
+  async process(file: TFile, fn: (data: string) => string): Promise<string> {
+    if (!(file instanceof TFile)) {
+      throw new TypeError("FakeVault.process expects a TFile, got a string path");
+    }
     this.processCalls++;
-    const p = normalizePath(path);
+    const p = normalizePath(file.path);
     const next = fn(this.files.get(p) ?? "");
     this.files.set(p, next);
     return next;

@@ -64,7 +64,10 @@ export async function writeFile(vault: Vault, path: string, content: string): Pr
   }
 }
 
-/** Atomic read-modify-write for an existing file; falls back for older API. */
+/** Atomic read-modify-write for an existing file; falls back for older API.
+ * Vault.process takes a TFile, not a path string — passing a string survives
+ * the duck-type check but throws at runtime (Obsidian 1.14 assigns options on
+ * the argument), and the modify fallback below would never run. */
 export async function mutateFileAtomic(
   vault: Vault,
   path: string,
@@ -73,10 +76,10 @@ export async function mutateFileAtomic(
   const file = vault.getAbstractFileByPath(normalizePath(path));
   if (!(file instanceof TFile)) throw new Error(`mutateFileAtomic: no file at ${path}`);
   const withProcess = vault as unknown as {
-    process?: (path: string, fn: (data: string) => string) => Promise<string>;
+    process?: (file: TFile, fn: (data: string) => string) => Promise<string>;
   };
   if (typeof withProcess.process === "function") {
-    await withProcess.process(file.path, mutate);
+    await withProcess.process(file, mutate);
     return;
   }
   await vault.modify(file, mutate(await vault.read(file)));
