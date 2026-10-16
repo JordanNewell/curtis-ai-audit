@@ -1,0 +1,12 @@
+<svg xmlns="http://www.w3.org/2000/svg" viewBox="0 0 540 540" width="540" height="540" role="img" aria-label="Logo">
+  <title>Modern C Logo</title>
+  <defs>
+    <path id="c-mark" d="M400.8 139.2 A185 185 0 1 0 400.8 400.8 L344.2 344.2 A105 105 0 1 1 344.2 195.8 Z"/>
+  </defs>
+
+  <!-- Outer ring -->
+  <circle cx="270" cy="270" r="258" fill="none" stroke="#3E6746" stroke-width="10"/>
+
+  <!-- C mark -->
+  <use href="#c-mark" fill="#3E6746"/>
+</svg>

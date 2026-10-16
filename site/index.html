@@ -1,0 +1,255 @@
+<!doctype html>
+<html lang="en">
+<head>
+<meta charset="utf-8" />
+<meta name="viewport" content="width=device-width, initial-scale=1" />
+<title>Curtis AI Audit — every AI action in your vault leaves a receipt</title>
+<meta name="description" content="Local-first audit trail for AI agent activity in your Obsidian vault. Every agent action gets an append-only markdown receipt — per-day ledgers, a rolling digest, and an inbox any agent can append to. A journal, not a forensic system." />
+<meta property="og:title" content="Curtis AI Audit — every AI action in your vault leaves a receipt" />
+<meta property="og:description" content="Local-first audit trail for AI agent activity in your Obsidian vault. Plain markdown receipts, no database." />
+<link rel="icon" type="image/svg+xml" href="assets/curtis-mark.svg" />
+<style>
+	/* Curtis Records Office tokens — same family as curtis-ai-porter.
+	   Paper first; green-700 is the only accent; retired: #00FF41, #1AFF72. */
+	:root {
+		--bg: #F5F5F3;
+		--panel: #FFFFFF;
+		--panel-2: #F0F2EC;
+		--border: #DDE0D8;
+		--text: #1A1A18;
+		--muted: #6B6B66;
+		--accent: #0E7A45;
+		--accent-ink: #F5F5F3;
+		--accent-dim: #F0F2EC;
+		--serif: "Fraunces", Georgia, "Times New Roman", serif;
+		--mono: "IBM Plex Mono", ui-monospace, "Cascadia Mono", Consolas, monospace;
+	}
+	* { box-sizing: border-box; }
+	html, body { margin: 0; padding: 0; }
+	html { scroll-behavior: smooth; }
+	body {
+		background: var(--bg);
+		color: var(--text);
+		font: 15px/1.6 "IBM Plex Sans", system-ui, -apple-system, "Segoe UI", Roboto, Helvetica, Arial, sans-serif;
+	}
+	.wrap { max-width: 960px; margin-inline: auto; padding-inline: 20px; }
+	a { color: var(--accent); text-decoration: none; text-underline-offset: 3px; }
+	a:hover { text-decoration: underline; }
+	code { font-family: var(--mono); font-size: 0.86em; color: var(--text); background: var(--panel-2); border-radius: 4px; padding: 1px 6px; }
+	:focus-visible { outline: 2px solid var(--accent); outline-offset: 2px; border-radius: 4px; }
+
+	nav { display: flex; align-items: center; gap: 18px; flex-wrap: wrap; padding-block: 20px; border-block-end: 1px solid var(--border); }
+	nav .brand { display: flex; align-items: center; gap: 10px; font-family: var(--serif); font-weight: 600; font-size: 17px; color: var(--text); }
+	nav .brand img { width: 24px; height: 24px; }
+	nav .brand .mark { color: var(--accent); }
+	nav .links { margin-inline-start: auto; display: flex; gap: 18px; flex-wrap: wrap; font-size: 13.5px; }
+	nav .links a { color: var(--muted); }
+	nav .links a:hover { color: var(--text); text-decoration: none; }
+	nav .links a.strong { color: var(--accent); }
+
+	header.hero { padding-block: 72px 56px; }
+	.hero .badge {
+		display: inline-block; font-family: var(--mono); font-size: 11.5px; color: var(--muted);
+		border: 1px solid var(--border); border-radius: 99px; padding: 3px 12px; margin-block-end: 22px;
+	}
+	.hero h1 { font-family: var(--serif); font-size: clamp(30px, 5.4vw, 46px); line-height: 1.12; letter-spacing: -0.5px; margin: 0 0 18px; font-weight: 600; }
+	.hero h1 .mark { color: var(--accent); }
+	.hero .sub { font-size: 17px; color: var(--muted); max-width: 680px; margin: 0 0 28px; }
+	.hero .sub b { color: var(--text); font-weight: 600; }
+	.cta-row { display: flex; gap: 12px; flex-wrap: wrap; align-items: center; }
+	.btn {
+		display: inline-block; border-radius: 8px; font: inherit; font-weight: 600;
+		padding: 10px 20px; cursor: pointer; text-decoration: none;
+	}
+	.btn:hover { text-decoration: none; }
+	.btn.primary { background: var(--accent); color: var(--accent-ink); }
+	.btn.primary:hover { filter: brightness(1.08); }
+	.btn.ghost { background: var(--panel-2); color: var(--text); border: 1px solid var(--border); font-size: 14px; padding: 9px 16px; }
+	.btn.ghost:hover { border-color: var(--accent); }
+	.hero .note { margin-block-start: 16px; font-size: 13px; color: var(--muted); }
+	.hero .note .dot { color: var(--accent); }
+
+	section { padding-block: 44px; }
+	section > h2 { font-family: var(--serif); font-size: 23px; margin: 0 0 8px; letter-spacing: -0.2px; }
+	section > p.lead { color: var(--muted); margin: 0 0 26px; max-width: 720px; }
+	.section-tag { font-family: var(--mono); font-size: 11.5px; color: var(--accent); letter-spacing: 1px; text-transform: uppercase; display: block; margin-block-end: 8px; }
+
+	.steps { display: grid; grid-template-columns: repeat(3, 1fr); gap: 14px; }
+	.step { background: var(--panel); border: 1px solid var(--border); border-radius: 12px; padding: 20px; }
+	.step .num { font-family: var(--mono); font-size: 12px; color: var(--accent); display: block; margin-block-end: 10px; }
+	.step h3 { margin: 0 0 6px; font-size: 15px; }
+	.step p { margin: 0; color: var(--muted); font-size: 13.5px; }
+
+	.cards-2 { display: grid; grid-template-columns: 1fr 1fr; gap: 14px; }
+	.card { background: var(--panel); border: 1px solid var(--border); border-radius: 12px; padding: 22px; }
+	.card h3 { margin: 0 0 8px; font-size: 15px; font-family: var(--mono); }
+	.card h3 .mark { color: var(--accent); }
+	.card p { margin: 0; color: var(--muted); font-size: 13.5px; }
+	.card p b { color: var(--text); font-weight: 600; }
+	.step, .card { transition: border-color .15s; }
+	.step:hover, .card:hover { border-color: var(--accent); }
+
+	/* the receipt — the signature Records Office container: Plex Mono on
+	   paper-surface with dashed perforation top and bottom */
+	.localbox {
+		background: var(--panel); border: 1px solid var(--border); border-block: 2px dashed var(--muted);
+		border-radius: 0; padding: 26px 28px;
+	}
+	.localbox h2 { margin: 0 0 8px; font-family: var(--serif); font-size: 23px; letter-spacing: -0.2px; }
+	.localbox p { margin: 0; color: var(--muted); font-family: var(--mono); font-size: 13px; line-height: 1.7; max-width: 720px; }
+	.localbox p b { color: var(--text); }
+
+	pre.term {
+		background: var(--panel); border: 1px solid var(--border); border-radius: 12px;
+		padding: 18px 20px; overflow-x: auto; font: 13px/1.7 var(--mono); margin: 0;
+	}
+	pre.term .c { color: var(--muted); }
+	pre.term .p { color: var(--accent); }
+
+	.install-grid { display: grid; grid-template-columns: 1fr 1fr; gap: 14px; }
+
+	table.cmds { width: 100%; border-collapse: collapse; border: 1px solid var(--border); border-radius: 12px; overflow: hidden; font-size: 14px; }
+	table.cmds th, table.cmds td { text-align: left; padding: 11px 16px; border-block-end: 1px solid var(--border); vertical-align: top; }
+	table.cmds th { background: var(--panel-2); color: var(--muted); font-family: var(--mono); font-size: 12px; font-weight: 500; border-block-end: 1px solid var(--border); }
+	table.cmds tr:last-child td { border-block-end: none; }
+	table.cmds tbody tr:nth-child(even) { background: var(--panel-2); }
+	table.cmds td:first-child { font-weight: 600; white-space: nowrap; }
+	.table-scroll { overflow-x: auto; border-radius: 12px; }
+
+	footer { border-block-start: 1px solid var(--border); margin-block-start: 24px; padding-block: 28px 48px; font-size: 13px; color: var(--muted); }
+	footer p { margin: 0 0 6px; }
+	footer a { color: var(--muted); }
+
+	@media (max-width: 760px) {
+		header.hero { padding-block: 48px 40px; }
+		.steps { grid-template-columns: 1fr; }
+		.cards-2 { grid-template-columns: 1fr; }
+		.install-grid { grid-template-columns: 1fr; }
+		section { padding-block: 34px; }
+	}
+</style>
+</head>
+<body>
+<div class="wrap">
+
+	<nav aria-label="Site">
+		<a class="brand" href="./">
+			<img src="assets/curtis-mark.svg" alt="" />
+			Curtis&nbsp;Audit<span class="mark">.</span>
+		</a>
+		<div class="links">
+			<a href="#receipts">Receipts</a>
+			<a href="#install">Install</a>
+			<a href="#agents">Agents</a>
+			<a href="#scope">Honest scope</a>
+			<a href="https://github.com/JordanNewell/curtis-ai-audit">GitHub</a>
+		</div>
+	</nav>
+
+	<header class="hero">
+		<span class="badge">v0.2.4 · BUSL-1.1 · local-first</span>
+		<h1>Every AI action in your vault leaves a receipt<span class="mark">.</span></h1>
+		<p class="sub"><b>Curtis AI Audit</b> is a local-first audit trail for AI agent activity in your Obsidian vault. Every agent action gets an <b>append-only markdown receipt</b> — plain files, no database, stored in the vault you already own.</p>
+		<div class="cta-row">
+			<a class="btn primary" href="#install">Install the plugin</a>
+			<a class="btn ghost" href="#agents">File a receipt from anything</a>
+			<a class="btn ghost" href="https://github.com/JordanNewell/curtis-ai-audit">GitHub ↗</a>
+		</div>
+		<p class="note"><span class="dot">●</span> Everything lives in your vault as markdown. No accounts, no uploads, no telemetry.</p>
+	</header>
+
+	<section id="receipts" aria-label="What you get">
+		<span class="section-tag">what you get</span>
+		<h2>Receipts you can read — and parse</h2>
+		<p class="lead">One <code>audit.v1</code> block per agent action: who, what, when, model, duration, tokens, status — plus a rendered human summary. Readable in Obsidian, parseable by anything.</p>
+		<div class="cards-2">
+			<div class="card">
+				<h3><span class="mark">Audit/ledger/</span> YYYY-MM-DD.md</h3>
+				<p>Append-only <b>per-day ledgers</b>. The envelope is the receipt as canonical JSON; the body is the summary. Open a day's shard like any note — <b>metadata only, tool input content is never recorded</b>.</p>
+			</div>
+			<div class="card">
+				<h3><span class="mark">Audit/digest.md</span> — the rolling digest</h3>
+				<p>Counts, statuses, tokens, durations, a per-day breakdown, errors. Rewritten on demand — the ledgers are the source of truth, the digest is a view.</p>
+			</div>
+			<div class="card">
+				<h3><span class="mark">OM-1</span> inbox any agent can append to</h3>
+				<p>External agents drop a message into <code>Messenger/audit/inbox.md</code>; the plugin polls with cursor semantics, rejects junk, dedupes redeliveries. The messenger plugin is <b>not required</b> — the inbox is just a file.</p>
+			</div>
+			<div class="card">
+				<h3><span class="mark">Verify</span> — integrity without crypto</h3>
+				<p>Detects malformed blocks, duplicate ids and sequences, reordered shards, and per-agent sequence gaps — deletions leave holes. <b>No cryptography, no false promises.</b></p>
+			</div>
+		</div>
+		<p class="lead" style="margin-block:22px 0;">A receipt, as it lands in today's shard:</p>
+<pre class="term"><code><span class="c">&lt;!-- curtis-audit:</span> {"schema":"audit.v1","id":"rcp_…","seq":42,"agent":"curtis-ai-chat","action":"inference","ts":"2026-10-16T12:00:00.000Z","recorded":"2026-10-16T12:00:01.246Z","provider":"openai","model":"gpt-4o","status":"ok","durationMs":1234,"tokens":{"input":812,"output":341},"subject":"Notes/question.md"} <span class="c">--&gt;</span>
+**inference** · ok · `gpt-4o` via `openai` · 1234ms · 812 in / 341 out
+Subject: `Notes/question.md`
+
+Answered a question about the spec.
+<span class="c">&lt;!-- /curtis-audit --&gt;</span></code></pre>
+	</section>
+
+	<section id="install" aria-label="Install">
+		<span class="section-tag">install</span>
+		<h2>Two installs, depending on who's writing</h2>
+		<p class="lead">The plugin reads, verifies, and digests. The writer lets anything on your machine file receipts — no Obsidian needed.</p>
+		<div class="install-grid">
+			<div class="card">
+				<h3><span class="mark">01</span> the plugin</h3>
+				<p>From a <a href="https://github.com/JordanNewell/curtis-ai-audit/releases">release</a>: download <code>main.js</code>, <code>manifest.json</code>, and <code>styles.css</code> into <code>&lt;vault&gt;/.obsidian/plugins/curtis-ai-audit/</code>, then enable it in Obsidian (Settings → Community plugins). Not in the community directory; <a href="https://github.com/TfTHacker/obsidian42-brat">BRAT</a> can track this repo for updates. Requires Obsidian 1.13.0+.</p>
+			</div>
+			<div class="card">
+				<h3><span class="mark">02</span> the receipt writer</h3>
+				<p>From a checkout, one line puts a <code>curtis-audit</code> command on your PATH:</p>
+				<p style="margin-block-start:10px;"><code>node install.mjs</code></p>
+				<p style="margin-block-start:10px;">After that: <code>… | curtis-audit --agent my-agent --inbox …</code></p>
+			</div>
+		</div>
+	</section>
+
+	<section id="agents" aria-label="File a receipt from anything">
+		<span class="section-tag">agents</span>
+		<h2>File a receipt from anything</h2>
+		<p class="lead">Any shell, any agent, any device that can append to a file — the whole integration is one dependency-free line:</p>
+<pre class="term"><code><span class="c"># one-off, from a checkout</span>
+<span class="p">echo</span> '{"action":"inference","summary":"Nightly digest run"}' | node bin/curtis-audit-file.mjs \
+  --agent research-agent --model gemini-2.5-pro \
+  --inbox "$HOME/vault/Messenger/audit/inbox.md"
+
+<span class="c"># after `node install.mjs`</span>
+<span class="p">echo</span> '{"action":"inference","summary":"Nightly digest run"}' | curtis-audit \
+  --agent research-agent --model gemini-2.5-pro \
+  --inbox "$HOME/vault/Messenger/audit/inbox.md"</code></pre>
+		<p class="lead" style="margin-block-start:22px;">In-Obsidian plugins skip the bus with the direct API — and <b>Install agent audit hooks</b> writes vault-scoped configs so Claude Code and OpenCode file their own receipts; Codex and Gemini get manual recipes. Full recipes: <a href="https://github.com/JordanNewell/curtis-ai-audit/blob/master/INTEGRATION.md">INTEGRATION.md</a>.</p>
+		<div class="table-scroll">
+		<table class="cmds">
+			<thead>
+				<tr><th>Command</th><th>What it does</th></tr>
+			</thead>
+			<tbody>
+				<tr><td>Check audit inbox now</td><td>poll + ingest, with a summary notice</td></tr>
+				<tr><td>Verify ledger</td><td>integrity scan; details to console</td></tr>
+				<tr><td>Write digest</td><td>(re)write <code>Audit/digest.md</code> and open it</td></tr>
+				<tr><td>Open today's ledger</td><td>open/create today's shard (UTC day boundaries)</td></tr>
+				<tr><td>Install agent audit hooks</td><td>write vault-scoped hook configs for local agents</td></tr>
+				<tr><td>Prune ledger now</td><td>manual retention pass — <b>off by default</b>, and each prune is itself recorded as a receipt</td></tr>
+			</tbody>
+		</table>
+		</div>
+	</section>
+
+	<section id="scope" aria-label="Honest scope">
+		<div class="localbox">
+			<h2>A journal, not a forensic system</h2>
+			<p><b>Deliberate honesty:</b> Curtis AI Audit is an accountability journal for the casual, accidental, and lazy cases — someone spending thirty seconds doctoring a markdown file defeats it. Tamper-evidence and retention enforcement are the next tier up and are <b>not pretended here</b>. The full statement of what is and isn't built: <a href="https://github.com/JordanNewell/curtis-ai-audit/blob/master/SPEC.md#8-upgrade-path-deliberately-unbuilt">SPEC §8, the upgrade path (deliberately unbuilt)</a>.</p>
+		</div>
+	</section>
+
+	<footer>
+		<p>Curtis AI Audit v0.2.4 · source-available under the <a href="https://github.com/JordanNewell/curtis-ai-audit/blob/master/LICENSE">Business Source License 1.1</a> © Jordan Newell · part of the Curtis family.</p>
+		<p><a href="https://github.com/JordanNewell/curtis-ai-audit">Audit on GitHub</a> · <a href="https://curtisai.tech" rel="noopener">curtisai.tech</a></p>
+	</footer>
+
+</div>
+</body>
+</html>
