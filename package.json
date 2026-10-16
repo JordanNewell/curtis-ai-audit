@@ -9,6 +9,7 @@
   "scripts": {
     "dev": "node esbuild.config.mjs",
     "build": "tsc -noEmit -skipLibCheck && node esbuild.config.mjs production",
+    "install-writer": "node install.mjs",
     "test": "vitest run"
   },
   "devDependencies": {

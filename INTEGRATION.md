@@ -44,10 +44,31 @@ their histories stay independent.
 
 ## Path B — external agents, scripts, other devices
 
-Append an OM-1 message to the audit inbox. No plugin API, no network — if
-you can write to the vault, you can file receipts. The message body is the
-payload as JSON; everything except `id`, `seq`, `recorded` may be included,
-and `agent` defaults to the sender address.
+The whole integration in one dependency-free line — no network, no packages,
+nothing but Node and a file append (from a checkout of this repo):
+
+```bash
+echo '{"action":"inference","summary":"Nightly digest run"}' | node bin/curtis-audit-file.mjs --agent research-agent --inbox "$HOME/vault/Messenger/audit/inbox.md"
+```
+
+After the writer is installed (`node install.mjs`, see Path C), the same line
+shortens to `... | curtis-audit --agent research-agent --inbox ...`. The
+writer takes only `--agent`, `--inbox`, `--action`, and `--status` (`=`
+forms work too); the payload is one JSON object on stdin. It appends a
+well-formed OM-1 block and always exits 0 on operational failure — it never
+breaks a script or agent run.
+
+What the writer records is deliberately narrow (the privacy rule below): the
+payload's `action`/`status`/`summary`, plus `tool_name` and path-like fields
+(`file_path`, `path`, `url`, …) as the subject. Free-form fields like
+`model` or token counts are not part of its surface — anything that has them
+should use Path A.
+
+Append an OM-1 message to the audit inbox directly instead, if you'd rather
+not use the writer at all. No plugin API, no network — if you can write to
+the vault, you can file receipts. The message body is the payload as JSON;
+everything except `id`, `seq`, `recorded` may be included, and `agent`
+defaults to the sender address.
 
 ```
 <!-- messenger: {"id":"msg_k9x2ab","from":"research-agent","to":"audit","ts":"2026-10-10T12:00:00.000Z","replyTo":null} -->
@@ -84,6 +105,17 @@ them file receipts through the bundled writer `bin/curtis-audit-file.mjs`
 (JSON on stdin → one OM-1 block appended to the audit inbox; always exits 0,
 never breaks the agent's run).
 
+The writer also works standalone — Path B's one-liner needs nothing installed
+beyond a checkout. To put it on your PATH permanently, from a checkout run:
+
+```bash
+node install.mjs        # or: npm run install-writer
+```
+
+That copies `curtis-audit-file.mjs` plus a `curtis-audit` shim into
+`~/.local/bin` (POSIX) or `%USERPROFILE%\bin` (Windows) — pass a directory
+to override — and prints a PATH note if the directory isn't already on it.
+
 - **Claude Code** — merges a `PostToolUse` (per tool call) and a `Stop`
   (per turn, `action: "agent-turn"`) entry into `.claude/settings.json`;
   unrelated config is preserved, a second install is a no-op. Project hooks
@@ -95,6 +127,27 @@ never breaks the agent's run).
   user-scoped `~/.codex/config.toml`. Turn-level receipts only.
 - **Gemini CLI** — manual for now: its hook schema is still settling; the
   command prints the recipe.
+
+**Codex CLI, copy-paste** — in `~/.codex/config.toml` (paths to your checkout
+or install dir and vault):
+
+```toml
+notify = ["node", "<bin-dir>/curtis-audit-file.mjs", "--agent", "codex", "--inbox", "<vault>/Messenger/audit/inbox.md", "--action", "agent-turn"]
+```
+
+Codex passes the turn payload as an argv JSON string, which the writer
+accepts as a fallback when stdin is empty. Codex has no per-tool hooks, so
+this yields one `agent-turn` receipt per turn.
+
+**Gemini CLI, copy-paste** — wire an `AfterTool` hook (settings shape varies
+by Gemini CLI version; check its hooks docs) to run:
+
+```bash
+node <bin-dir>/curtis-audit-file.mjs --agent gemini --inbox "<vault>/Messenger/audit/inbox.md"
+```
+
+The writer only needs the hook's event payload on stdin; it reads the tool
+name and path-like fields and drops everything else.
 
 Uninstall removes exactly what install added (entries are tagged by the
 writer filename) and touches nothing else. Malformed existing JSON aborts

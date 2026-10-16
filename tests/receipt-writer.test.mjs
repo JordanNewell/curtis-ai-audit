@@ -264,3 +264,40 @@ describe("writer CLI (end to end)", () => {
     fs.rmSync(dir, { recursive: true, force: true });
   });
 });
+
+describe("docs shell example (INTEGRATION.md Path B one-liner)", () => {
+  // The exact command string documented in INTEGRATION.md Path B — flags and
+  // payload must stay identical there and here; only the --inbox value is
+  // substituted (the doc points at the user's vault, the test at a temp file).
+  // With the writer installed, the doc's shim form `curtis-audit` execs this
+  // same `node bin/curtis-audit-file.mjs ...` line (install.mjs shim).
+  const DOC_COMMAND = (inbox) =>
+    `echo '{"action":"inference","summary":"Nightly digest run"}' | node bin/curtis-audit-file.mjs --agent research-agent --inbox ${inbox}`;
+
+  const run = (cmd, cwd) =>
+    process.platform === "win32"
+      ? // cmd.exe cannot parse the doc's POSIX quoting; the repo's Windows
+        // toolchain is Git Bash
+        spawnSync("bash", ["-c", cmd], { encoding: "utf8", cwd })
+      : spawnSync(cmd, { encoding: "utf8", shell: true, cwd });
+
+  it("files a parseable OM-1 receipt through a real shell from the repo root", () => {
+    const dir = fs.mkdtempSync(path.join(os.tmpdir(), "curtis-docs-"));
+    const inbox = path.join(dir, "inbox.md").split(path.sep).join("/");
+    const repoRoot = fileURLToPath(new URL("..", import.meta.url));
+    const r = run(DOC_COMMAND(inbox), repoRoot);
+    expect(r.error, `shell example failed to run: ${r.error?.message ?? ""}`).toBeUndefined();
+    expect(r.status).toBe(0);
+
+    const content = fs.readFileSync(inbox, "utf8");
+    const parsed = parseBlocks(content, "messenger");
+    expect(parsed).toHaveLength(1);
+    expect(parsed[0].header.from).toBe("research-agent");
+    expect(parsed[0].header.to).toBe("audit");
+    const body = JSON.parse(parsed[0].body);
+    expect(body.action).toBe("inference");
+    expect(body.status).toBe("ok");
+    expect(body.summary).toBe("Nightly digest run");
+    fs.rmSync(dir, { recursive: true, force: true });
+  });
+});

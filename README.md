@@ -57,6 +57,15 @@ From source: clone this repo into
 `<vault>/.obsidian/plugins/curtis-ai-audit/`, run
 `npm install && npm run build`, and enable it in Obsidian.
 
+The receipt writer alone (no Obsidian needed) — from a checkout, run
+`node install.mjs` to put a `curtis-audit` command on your PATH.
+
+## File a receipt from anything
+
+Any shell, any agent, no plugin required:
+`echo '{"action":"inference","summary":"..."}' | node bin/curtis-audit-file.mjs --agent my-agent --inbox <vault>/Messenger/audit/inbox.md`.
+Copy-paste recipes for Claude Code, Codex, Gemini CLI, and raw shell are in [INTEGRATION.md](./INTEGRATION.md).
+
 ## Usage
 
 Ribbon icon or commands:
