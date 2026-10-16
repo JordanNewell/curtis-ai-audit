@@ -179,7 +179,7 @@ async function mutateFileAtomic(vault, path, mutate) {
   if (!(file instanceof import_obsidian.TFile)) throw new Error(`mutateFileAtomic: no file at ${path}`);
   const withProcess = vault;
   if (typeof withProcess.process === "function") {
-    await withProcess.process(file.path, mutate);
+    await withProcess.process(file, mutate);
     return;
   }
   await vault.modify(file, mutate(await vault.read(file)));
