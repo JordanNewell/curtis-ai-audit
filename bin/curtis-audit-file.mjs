@@ -14,14 +14,18 @@
  * block to the audit inbox, which the curtis-ai-audit plugin polls and ingests.
  *
  * Contract (never break the agent's run):
- *   - ALWAYS exits 0, even on failure; diagnostics go to stderr, one line.
+ *   - Exits 0 on operational failure (disk full, bad inbox path): diagnostics
+ *     go to stderr, one line. Exits 2 on usage errors — your own flag typos
+ *     or a payload violating the field contract — instead of filing a bad
+ *     receipt.
  *   - Appends in a single write; never edits existing inbox content.
  *   - PRIVACY: only path-like fields may appear in the receipt. Command text,
  *     prompt text, note contents, and all other input values are dropped here.
  *
  * Usage:
  *   node curtis-audit-file.mjs --agent <name> [--inbox <path>] [--action <action>]
- *                              [--status <ok|error|aborted>]
+ *                              [--status <ok|error|aborted>] [--model <id>]
+ *                              [--provider <name>] [--tokens <json>]
  * Payload: one JSON object on stdin. Codex `notify` passes JSON as an argv
  * argument instead — that is accepted as a fallback when stdin is empty.
  */
@@ -39,6 +43,8 @@ const PATH_FIELDS = [
   "glob",
   "url",
 ];
+
+class UsageError extends Error {}
 
 /** Sorted-key, single-line JSON — mirrors src/protocol.ts canonicalJson. */
 export function canonicalJson(value, seen = new Set()) {
@@ -97,6 +103,36 @@ function cleanAction(value, fallback) {
   return cleaned && cleaned.length <= 64 && ACTION_RE.test(cleaned) ? cleaned : fallback;
 }
 
+function cleanOptionalString(value) {
+  return typeof value === "string" && value.trim() ? value.trim() : undefined;
+}
+
+/** Tokens are the point of a receipt: invalid ones are a usage error, never a
+ * silent drop. `null` means "unknown" (some hook senders emit it), not garbage
+ * — it is treated as absent. */
+function validateTokens(value, label) {
+  if (value === null) return undefined;
+  if (!value || typeof value !== "object" || Array.isArray(value)) {
+    throw new UsageError(`${label} must be a JSON object of non-negative numbers, e.g. '{"input":1234,"output":567}'`);
+  }
+  for (const [key, item] of Object.entries(value)) {
+    if (typeof item !== "number" || !Number.isFinite(item) || item < 0) {
+      throw new UsageError(`${label}.${key} must be a non-negative number`);
+    }
+  }
+  return value;
+}
+
+function parseTokensJson(raw) {
+  let parsed;
+  try {
+    parsed = JSON.parse(raw);
+  } catch {
+    throw new UsageError(`--tokens must be JSON, e.g. '{"input":1234,"output":567}'`);
+  }
+  return validateTokens(parsed, "--tokens");
+}
+
 function firstPathLike(payload) {
   const toolInput = payload.tool_input && typeof payload.tool_input === "object" ? payload.tool_input : {};
   for (const source of [toolInput, payload]) {
@@ -110,13 +146,18 @@ function firstPathLike(payload) {
 
 /**
  * Payload → audit.v1 fields. Hard privacy rule: the only values read from the
- * payload are tool_name, status, and the path-like fields above.
+ * payload are tool_name, status, model, provider, tokens, and the path-like
+ * fields above. Explicit CLI overrides win; tokens from either source are
+ * validated (a usage error, never a silent drop).
  */
 export function mapPayload(payload, overrides = {}) {
   const p = payload && typeof payload === "object" ? payload : {};
   const action = cleanAction(overrides.action, cleanAction(p.action, "tool-call"));
   const status = STATUSES.has(overrides.status) ? overrides.status : STATUSES.has(p.status) ? p.status : "ok";
   const subject = firstPathLike(p);
+  const model = cleanOptionalString(overrides.model) ?? cleanOptionalString(p.model);
+  const provider = cleanOptionalString(overrides.provider) ?? cleanOptionalString(p.provider);
+  const tokens = overrides.tokens ?? (p.tokens !== undefined ? validateTokens(p.tokens, "payload tokens") : undefined);
   const toolName = typeof p.tool_name === "string" && p.tool_name.trim() ? p.tool_name.trim() : undefined;
   // A sender-supplied summary is honored only when nothing structural was
   // derived — hook tool_input never reaches the ledger by any other route.
@@ -136,7 +177,7 @@ export function mapPayload(payload, overrides = {}) {
               : typeof p.hook_event_name === "string" && p.hook_event_name.trim()
                 ? p.hook_event_name.trim()
                 : "agent tool call");
-  return { action, status, subject, summary };
+  return { action, status, subject, model, provider, tokens, summary };
 }
 
 export function buildBlock({ from, ts, id }, payload, overrides = {}) {
@@ -150,9 +191,11 @@ export function buildBlock({ from, ts, id }, payload, overrides = {}) {
   return `<!-- ${MARKER}: ${json} -->\n${body}\n<!-- /${MARKER} -->\n\n`;
 }
 
-class UsageError extends Error {}
-
-const KNOWN_ARGS = new Set(["agent", "inbox", "action", "status"]);
+// Flags whose value must be present: silently dropping one produces a thin
+// receipt (or an unknown-agent one), which is exactly the bug class this
+// writer must not have. action/status take fallbacks and are validated later.
+const REQUIRED_VALUE_ARGS = new Set(["agent", "inbox", "model", "provider", "tokens"]);
+const KNOWN_ARGS = new Set([...REQUIRED_VALUE_ARGS, "action", "status"]);
 
 export function parseArgs(argv) {
   const args = {};
@@ -170,10 +213,10 @@ export function parseArgs(argv) {
     }
     const value = argv[i + 1];
     if (value === undefined || value === "" || value.trim() === "" || value.startsWith("--")) {
-      if (key === "inbox") {
-        throw new UsageError("--inbox requires a file path");
+      if (REQUIRED_VALUE_ARGS.has(key)) {
+        throw new UsageError(`--${key} requires a value`);
       }
-      args[key] = ""; // agent/action/status keep their fallbacks
+      args[key] = ""; // action/status keep their fallbacks
       continue;
     }
     args[key] = value;
@@ -228,9 +271,30 @@ async function main() {
 
   const agent = (args.agent || "").trim() || "unknown-agent";
   const inbox = args.inbox || path.join(process.cwd(), "Messenger", "audit", "inbox.md");
+  // An explicit --status outside the vocabulary is a mistake, not a preference:
+  // fail loudly rather than filing the receipt under a different status.
+  if (args.status !== undefined && !STATUSES.has(args.status)) {
+    throw new UsageError(
+      `--status must be one of ${[...STATUSES].join("|")} (got ${JSON.stringify(args.status)})`
+    );
+  }
+  // The action vocabulary is intentionally open-ended post-sanitize, so a
+  // non-canonical --action is only worth a warning, not a failure.
+  let actionOverride;
+  if (args.action !== undefined) {
+    actionOverride = cleanAction(args.action, "");
+    if (actionOverride !== args.action) {
+      console.error(
+        `[curtis-audit-file] warning: --action ${JSON.stringify(args.action)} sanitized to ${JSON.stringify(actionOverride || "tool-call")}`
+      );
+    }
+  }
   const overrides = {
-    action: args.action || undefined,
+    action: actionOverride || undefined,
     status: args.status || undefined,
+    model: args.model,
+    provider: args.provider,
+    tokens: args.tokens !== undefined ? parseTokensJson(args.tokens) : undefined,
   };
   const block = buildBlock({ from: agent, ts: new Date().toISOString(), id: newId() }, payload, overrides);
   fs.mkdirSync(path.dirname(inbox), { recursive: true });

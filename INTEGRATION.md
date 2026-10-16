@@ -48,21 +48,33 @@ The whole integration in one dependency-free line — no network, no packages,
 nothing but Node and a file append (from a checkout of this repo):
 
 ```bash
-echo '{"action":"inference","summary":"Nightly digest run"}' | node bin/curtis-audit-file.mjs --agent research-agent --inbox "$HOME/vault/Messenger/audit/inbox.md"
+echo '{"action":"inference","summary":"Nightly digest run"}' | node bin/curtis-audit-file.mjs --agent research-agent --model gemini-2.5-pro --inbox "$HOME/vault/Messenger/audit/inbox.md"
 ```
 
 After the writer is installed (`node install.mjs`, see Path C), the same line
-shortens to `... | curtis-audit --agent research-agent --inbox ...`. The
-writer takes only `--agent`, `--inbox`, `--action`, and `--status` (`=`
-forms work too); the payload is one JSON object on stdin. It appends a
-well-formed OM-1 block and always exits 0 on operational failure — it never
-breaks a script or agent run.
+shortens to `... | curtis-audit --agent research-agent --model ... --inbox ...`.
+
+Writer flags (`=` forms work too); the payload is one JSON object on stdin:
+
+| Flag | Value | Notes |
+| --- | --- | --- |
+| `--agent` | name | required; missing/empty is a usage error (exit 2) |
+| `--inbox` | path | defaults to `<cwd>/Messenger/audit/inbox.md` |
+| `--action` | string | open vocabulary, sanitized to `[a-z0-9._-]`; a non-canonical value warns on stderr and is sanitized |
+| `--status` | `ok` \| `error` \| `aborted` | anything else is a usage error (exit 2) |
+| `--model` | model id | e.g. `gemini-2.5-pro` |
+| `--provider` | provider name | e.g. `google` |
+| `--tokens` | JSON | e.g. `--tokens '{"input":1234,"output":567}'; non-negative numbers only — anything else is a usage error (exit 2) |
+
+`model`, `provider`, and `tokens` are also read from the payload (flags win).
+It appends a well-formed OM-1 block and always exits 0 on operational
+failure — it never breaks a script or agent run.
 
 What the writer records is deliberately narrow (the privacy rule below): the
-payload's `action`/`status`/`summary`, plus `tool_name` and path-like fields
-(`file_path`, `path`, `url`, …) as the subject. Free-form fields like
-`model` or token counts are not part of its surface — anything that has them
-should use Path A.
+payload's `action`/`status`/`summary`/`model`/`provider`/`tokens`, plus
+`tool_name` and path-like fields (`file_path`, `path`, `url`, …) as the
+subject. Free-form content like command text or note contents is not part of
+its surface — anything that needs more should use Path A.
 
 Append an OM-1 message to the audit inbox directly instead, if you'd rather
 not use the writer at all. No plugin API, no network — if you can write to
@@ -147,7 +159,8 @@ node <bin-dir>/curtis-audit-file.mjs --agent gemini --inbox "<vault>/Messenger/a
 ```
 
 The writer only needs the hook's event payload on stdin; it reads the tool
-name and path-like fields and drops everything else.
+name, path-like fields, and the metadata fields in the table above (status
+vocabulary: `ok`/`error`/`aborted`), and drops everything else.
 
 Uninstall removes exactly what install added (entries are tagged by the
 writer filename) and touches nothing else. Malformed existing JSON aborts

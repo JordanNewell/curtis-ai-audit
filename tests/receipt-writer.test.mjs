@@ -113,6 +113,42 @@ describe("mapPayload", () => {
     const fields = mapPayload({ type: "agent-turn-complete" });
     expect(fields.summary).toBe("agent-turn-complete");
   });
+
+  it("passes model, provider, and tokens through from the payload", () => {
+    const fields = mapPayload({
+      tool_name: "Edit",
+      model: " gemini-2.5-pro ",
+      provider: "google",
+      tokens: { input: 1234, output: 567 },
+    });
+    expect(fields.model).toBe("gemini-2.5-pro");
+    expect(fields.provider).toBe("google");
+    expect(fields.tokens).toEqual({ input: 1234, output: 567 });
+  });
+
+  it("drops empty model/provider but never silently drops invalid tokens", () => {
+    const fields = mapPayload({ model: "   ", provider: "" });
+    expect(fields.model).toBeUndefined();
+    expect(fields.provider).toBeUndefined();
+    expect(() => mapPayload({ tokens: { input: -1 } })).toThrow(/tokens/);
+    expect(() => mapPayload({ tokens: "junk" })).toThrow(/tokens/);
+    expect(() => mapPayload({ tokens: { input: "many" } })).toThrow(/tokens/);
+  });
+
+  it("treats tokens:null as unknown, not garbage (receipt still files)", () => {
+    const fields = mapPayload({ tokens: null });
+    expect(fields.tokens).toBeUndefined();
+  });
+
+  it("lets explicit overrides win over payload model/provider/tokens", () => {
+    const fields = mapPayload(
+      { model: "payload-model", provider: "payload-provider", tokens: { input: 1 } },
+      { model: "cli-model", provider: "cli-provider", tokens: { input: 9, output: 8 } }
+    );
+    expect(fields.model).toBe("cli-model");
+    expect(fields.provider).toBe("cli-provider");
+    expect(fields.tokens).toEqual({ input: 9, output: 8 });
+  });
 });
 
 describe("buildBlock", () => {
@@ -194,6 +230,30 @@ describe("parseArgs", () => {
     expect(() => parseArgs(["--inbox", "   "])).toThrow(/--inbox/);
   });
 
+  it("accepts --model, --provider, and --tokens", () => {
+    expect(
+      parseArgs(["--model", "gemini-2.5-pro", "--provider=google", "--tokens", '{"input":1,"output":2}'])
+    ).toEqual({
+      model: "gemini-2.5-pro",
+      provider: "google",
+      tokens: '{"input":1,"output":2}',
+    });
+  });
+
+  it("rejects an empty, missing, or flag-like --model/--provider/--tokens value", () => {
+    expect(() => parseArgs(["--model"])).toThrow(/--model/);
+    expect(() => parseArgs(["--model", ""])).toThrow(/--model/);
+    expect(() => parseArgs(["--provider", "--agent", "x"])).toThrow(/--provider/);
+    expect(() => parseArgs(["--tokens", ""])).toThrow(/--tokens/);
+  });
+
+  it("rejects an empty, missing, or flag-like --agent value with a usage error", () => {
+    expect(() => parseArgs(["--agent"])).toThrow(/--agent/);
+    expect(() => parseArgs(["--agent", ""])).toThrow(/--agent/);
+    expect(() => parseArgs(["--agent", "--inbox", "x"])).toThrow(/--agent/);
+    expect(() => parseArgs(["--agent", "   "])).toThrow(/--agent/);
+  });
+
   it("still allows omitting --inbox entirely (cwd default applies)", () => {
     expect(parseArgs(["--agent", "x"]).inbox).toBeUndefined();
   });
@@ -248,6 +308,115 @@ describe("writer CLI (end to end)", () => {
     expect(r.stderr).toMatch(/--junk/);
   });
 
+  it("exits 2 for a missing --agent value instead of filing an unknown-agent receipt", () => {
+    const r = spawnSync(process.execPath, [WRITER_PATH, "--agent"], { encoding: "utf8" });
+    expect(r.status).toBe(2);
+    expect(r.stderr).toMatch(/--agent/);
+  });
+
+  it("exits 2 for invalid --tokens JSON", () => {
+    const r = spawnSync(process.execPath, [WRITER_PATH, "--tokens", "not-json"], { encoding: "utf8" });
+    expect(r.status).toBe(2);
+    expect(r.stderr).toMatch(/--tokens/);
+  });
+
+  it("exits 2 when the payload carries invalid tokens", () => {
+    const r = spawnSync(
+      process.execPath,
+      [WRITER_PATH, "--agent", "claude-code"],
+      { encoding: "utf8", input: JSON.stringify({ tokens: { input: -5 } }) }
+    );
+    expect(r.status).toBe(2);
+    expect(r.stderr).toMatch(/tokens/);
+  });
+
+  it("files the receipt when the payload says tokens:null (unknown, not garbage)", () => {
+    const dir = fs.mkdtempSync(path.join(os.tmpdir(), "curtis-writer-"));
+    const inbox = path.join(dir, "inbox.md");
+    const r = spawnSync(
+      process.execPath,
+      [WRITER_PATH, "--agent", "claude-code", "--inbox", inbox],
+      { encoding: "utf8", input: JSON.stringify({ tokens: null }) }
+    );
+    expect(r.status).toBe(0);
+    const body = JSON.parse(parseBlocks(fs.readFileSync(inbox, "utf8"), "messenger")[0].body);
+    expect(body.tokens).toBeUndefined();
+    fs.rmSync(dir, { recursive: true, force: true });
+  });
+
+  it("files the receipt when --tokens is explicitly null", () => {
+    const dir = fs.mkdtempSync(path.join(os.tmpdir(), "curtis-writer-"));
+    const inbox = path.join(dir, "inbox.md");
+    const r = spawnSync(
+      process.execPath,
+      [WRITER_PATH, "--agent", "claude-code", "--inbox", inbox, "--tokens", "null"],
+      { encoding: "utf8", input: "{}" }
+    );
+    expect(r.status).toBe(0);
+    const body = JSON.parse(parseBlocks(fs.readFileSync(inbox, "utf8"), "messenger")[0].body);
+    expect(body.tokens).toBeUndefined();
+    fs.rmSync(dir, { recursive: true, force: true });
+  });
+
+  it("exits 2 for an invalid explicit --status (payload-driven values still sanitize)", () => {
+    const r = spawnSync(process.execPath, [WRITER_PATH, "--status", "meh"], { encoding: "utf8" });
+    expect(r.status).toBe(2);
+    expect(r.stderr).toMatch(/--status/);
+  });
+
+  it("records model, provider, and tokens passed as flags", () => {
+    const dir = fs.mkdtempSync(path.join(os.tmpdir(), "curtis-writer-"));
+    const inbox = path.join(dir, "inbox.md");
+    const r = spawnSync(
+      process.execPath,
+      [
+        WRITER_PATH,
+        "--agent",
+        "claude-code",
+        "--inbox",
+        inbox,
+        "--model",
+        "gemini-2.5-pro",
+        "--provider",
+        "google",
+        "--tokens",
+        '{"input":1234,"output":567}',
+      ],
+      { encoding: "utf8", input: JSON.stringify({ tool_name: "Edit", tool_input: { file_path: "Notes/a.md" } }) }
+    );
+    expect(r.status).toBe(0);
+    const parsed = parseBlocks(fs.readFileSync(inbox, "utf8"), "messenger");
+    const body = JSON.parse(parsed[0].body);
+    expect(body.model).toBe("gemini-2.5-pro");
+    expect(body.provider).toBe("google");
+    expect(body.tokens).toEqual({ input: 1234, output: 567 });
+    fs.rmSync(dir, { recursive: true, force: true });
+  });
+
+  it("warns on stderr and sanitizes an invalid explicit --action, but stays silent for a canonical one", () => {
+    const dir = fs.mkdtempSync(path.join(os.tmpdir(), "curtis-writer-"));
+    const inbox = path.join(dir, "inbox.md");
+    const r = spawnSync(
+      process.execPath,
+      [WRITER_PATH, "--agent", "claude-code", "--inbox", inbox, "--action", "Not A Valid Action!"],
+      { encoding: "utf8", input: "{}" }
+    );
+    expect(r.status).toBe(0);
+    expect(r.stderr).toMatch(/--action/);
+    const body = JSON.parse(parseBlocks(fs.readFileSync(inbox, "utf8"), "messenger")[0].body);
+    expect(body.action).toBe("not-a-valid-action");
+
+    const clean = path.join(dir, "clean.md");
+    const r2 = spawnSync(
+      process.execPath,
+      [WRITER_PATH, "--agent", "claude-code", "--inbox", clean, "--action", "agent-turn"],
+      { encoding: "utf8", input: "{}" }
+    );
+    expect(r2.status).toBe(0);
+    expect(r2.stderr).toBe("");
+    fs.rmSync(dir, { recursive: true, force: true });
+  });
+
   it("appends a block to the given inbox and exits 0 when invoked directly", () => {
     const dir = fs.mkdtempSync(path.join(os.tmpdir(), "curtis-writer-"));
     const inbox = path.join(dir, "inbox.md");
@@ -272,7 +441,7 @@ describe("docs shell example (INTEGRATION.md Path B one-liner)", () => {
   // With the writer installed, the doc's shim form `curtis-audit` execs this
   // same `node bin/curtis-audit-file.mjs ...` line (install.mjs shim).
   const DOC_COMMAND = (inbox) =>
-    `echo '{"action":"inference","summary":"Nightly digest run"}' | node bin/curtis-audit-file.mjs --agent research-agent --inbox ${inbox}`;
+    `echo '{"action":"inference","summary":"Nightly digest run"}' | node bin/curtis-audit-file.mjs --agent research-agent --model gemini-2.5-pro --inbox ${inbox}`;
 
   const run = (cmd, cwd) =>
     process.platform === "win32"
@@ -297,6 +466,7 @@ describe("docs shell example (INTEGRATION.md Path B one-liner)", () => {
     const body = JSON.parse(parsed[0].body);
     expect(body.action).toBe("inference");
     expect(body.status).toBe("ok");
+    expect(body.model).toBe("gemini-2.5-pro");
     expect(body.summary).toBe("Nightly digest run");
     fs.rmSync(dir, { recursive: true, force: true });
   });
