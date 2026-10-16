@@ -52,7 +52,7 @@ jobs:
             styles.css
 
       - name: Create release and upload assets
-        uses: softprops/action-gh-release@v2
+        uses: softprops/action-gh-release@v3
         with:
           files: |
             main.js
